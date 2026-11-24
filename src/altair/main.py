@@ -780,7 +780,8 @@ def _config_voz_padrao() -> Dict[str, str]:
     base_dir = _project_root()
     eleven_key = os.getenv("ELEVENLABS_API_KEY", "").strip()
     return {
-        "provider": "elevenlabs",
+        "provider": "elevenlabs" if eleven_key else "windows_local",
+        "stt_mode": os.getenv("ALTAIR_STT_MODE", "remote" if eleven_key else "local"),
         "assistant_name": os.getenv("ALTAIR_ASSISTANT_NAME", "Altair").strip() or "Altair",
         "piper_model": os.path.join(
             ASSETS_DIR, "piper", "voices", "pt_BR-faber-medium.onnx"
@@ -835,8 +836,8 @@ def carregar_config_voz() -> Dict[str, str]:
         cfg["stt_remote_timeout"] = "60"
 
     prov = cfg.get("provider", "elevenlabs").strip().lower()
-    if prov != "elevenlabs":
-        prov = "elevenlabs"
+    if prov not in {"elevenlabs", "windows_local"}:
+        prov = "windows_local"
     cfg["provider"] = prov
     if migrate_secret:
         salvar_config_voz(cfg)
@@ -862,6 +863,9 @@ def _to_float(valor: str, padrao: float) -> float:
 
 
 def criar_voz_por_config(cfg: Dict[str, str]):
+    if cfg.get("provider") == "windows_local":
+        from altair.core.local_voice import WindowsLocalVoice
+        return WindowsLocalVoice()
     return ElevenLabsVoice(
         api_key=(cfg.get("eleven_api_key") or "").strip(),
         voice_id=(cfg.get("eleven_voice_id") or "").strip(),
@@ -873,6 +877,7 @@ def criar_voz_por_config(cfg: Dict[str, str]):
 def aplicar_config_voz(cfg: Dict[str, str]) -> None:
     global voz
     voz = criar_voz_por_config(cfg)
+    configurar_stt_remoto(cfg)
     ia.piper = voz
     configurar_nome_assistente(cfg.get("assistant_name", "Altair"))
 
@@ -1358,9 +1363,13 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
     layout.addLayout(form)
 
     prov_var = QComboBox(win)
-    prov_var.addItems(["elevenlabs"])
-    prov_var.setCurrentText("elevenlabs")
+    prov_var.addItems(["windows_local", "elevenlabs"])
+    prov_var.setCurrentText(cfg_atual["provider"])
     form.addRow("Provedor de voz", prov_var)
+    stt_mode = QComboBox(win)
+    stt_mode.addItems(["local", "remote"])
+    stt_mode.setCurrentText(cfg_atual.get("stt_mode", "local"))
+    form.addRow("Reconhecimento de voz", stt_mode)
 
     eleven_key = QLineEdit(cfg_atual.get("eleven_api_key", ""))
     eleven_key.setEchoMode(QLineEdit.Password)
@@ -1388,9 +1397,9 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
     form.addRow("STT remoto - Timeout", stt_timeout)
 
     aviso = QLabel(
-        "Troca aplicada na hora. Para ElevenLabs, informe API Key e Voice ID. "
-        "Para transcricao da fala do usuario, use a mesma chave do ElevenLabs ou configure "
-        "um endpoint remoto diferente."
+        "Windows local usa vozes instaladas no PC. Whisper local precisa do modelo "
+        "instalado pelo setup_voice.ps1. Nenhuma chave é necessária no modo local. "
+        "ElevenLabs e STT remoto são opcionais e podem ter cobranças."
     )
     aviso.setWordWrap(True)
     layout.addWidget(aviso)
@@ -1401,7 +1410,8 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
     def salvar_voz() -> None:
         prov = prov_var.currentText().strip().lower()
         cfg_novo = {
-            "provider": "elevenlabs",
+            "provider": prov,
+            "stt_mode": stt_mode.currentText(),
             "assistant_name": cfg_atual.get("assistant_name", "Altair"),
             "piper_model": "",
             "piper_length_scale": "1.08",
@@ -1418,12 +1428,12 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
             "stt_remote_timeout": stt_timeout.text().strip() or "60",
         }
 
-        if prov != "elevenlabs":
+        if prov not in {"elevenlabs", "windows_local"}:
             _qt_message_box(
                 win, QMessageBox.Critical, "Erro", "Provedor de voz invalido."
             )
             return
-        if not cfg_novo["eleven_api_key"]:
+        if prov == "elevenlabs" and not cfg_novo["eleven_api_key"]:
             _qt_message_box(
                 win,
                 QMessageBox.Critical,
@@ -1431,7 +1441,7 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
                 "Informe a API Key do ElevenLabs.",
             )
             return
-        if not cfg_novo["eleven_voice_id"]:
+        if prov == "elevenlabs" and not cfg_novo["eleven_voice_id"]:
             _qt_message_box(
                 win,
                 QMessageBox.Critical,
