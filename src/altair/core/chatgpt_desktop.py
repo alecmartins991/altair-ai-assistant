@@ -4,7 +4,8 @@ import webbrowser
 
 from PyQt5.QtCore import Qt, QTimer
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton, QComboBox,
-                             QMessageBox, QCheckBox)
+                             QMessageBox, QCheckBox, QFileDialog)
+from pathlib import Path
 
 from altair.core.chatgpt_plan import ChatGPTSession, PlanError
 
@@ -71,7 +72,50 @@ def configure_chatgpt(parent, initial):
     layout.addWidget(router)
     apply = QPushButton("Usar plano ChatGPT no Altair")
     layout.addWidget(apply)
+    memory = QCheckBox("Guardar contexto e últimas conversas neste computador (opcional)")
+    layout.addWidget(memory)
+    import_context = QPushButton("Importar contexto de projeto (.txt ou .md)")
+    clear_memory = QPushButton("Apagar memória local desta conta")
+    layout.addWidget(import_context)
+    layout.addWidget(clear_memory)
     result = {}
+
+    def change_memory(checked):
+        try:
+            data = session.memory()
+            data["enabled"] = bool(checked)
+            session.save_memory(data)
+        except Exception:
+            QMessageBox.warning(dialog, "Memória", "Não foi possível salvar a preferência.")
+        sync()
+
+    def import_file():
+        path, _ = QFileDialog.getOpenFileName(dialog, "Escolha um resumo que deseja compartilhar", "", "Texto (*.txt *.md)")
+        if not path:
+            return
+        try:
+            with Path(path).open("r", encoding="utf-8-sig") as stream:
+                content = stream.read(12001)
+            if len(content) > 12000:
+                QMessageBox.warning(dialog, "Memória", "Use um resumo de até 12.000 caracteres.")
+                return
+            if QMessageBox.question(dialog, "Memória", "Salvar este contexto e enviá-lo ao modelo nas próximas conversas do Altair?") != QMessageBox.Yes:
+                return
+            data = session.memory()
+            data.update(context=content, enabled=True)
+            session.save_memory(data)
+            sync()
+        except Exception:
+            QMessageBox.warning(dialog, "Memória", "Não foi possível importar o arquivo.")
+
+    def erase():
+        if QMessageBox.question(dialog, "Memória", "Apagar o contexto e histórico locais desta conta?") == QMessageBox.Yes:
+            try:
+                session.save_memory({"enabled": False})
+            except Exception:
+                QMessageBox.warning(dialog, "Memória", "Não foi possível apagar a memória.")
+            sync()
+
 
     def sync():
         account = session.load()
@@ -81,6 +125,12 @@ def configure_chatgpt(parent, initial):
         refresh.setEnabled(session.authorized() and consent.isChecked())
         login.setEnabled(consent.isChecked())
         apply.setEnabled(session.authorized() and consent.isChecked() and main.count() > 0)
+        memory.blockSignals(True)
+        memory.setChecked(session.memory().get("enabled") is True)
+        memory.blockSignals(False)
+        memory.setEnabled(session.authorized())
+        import_context.setEnabled(session.authorized() and memory.isChecked())
+        clear_memory.setEnabled(bool(account.get("client_id")))
 
     def models():
         try:
@@ -127,6 +177,9 @@ def configure_chatgpt(parent, initial):
                       model_main=main.currentData(), model_router=router.currentData())
         dialog.accept()
 
+    memory.toggled.connect(change_memory)
+    import_context.clicked.connect(import_file)
+    clear_memory.clicked.connect(erase)
     consent.toggled.connect(sync)
     login.clicked.connect(connect)
     logout.clicked.connect(disconnect)
