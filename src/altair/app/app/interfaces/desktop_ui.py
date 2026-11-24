@@ -648,6 +648,7 @@ class DesktopUI(QMainWindow):
         bottom_layout.setContentsMargins(13, 13, 13, 13)
         bottom_layout.setSpacing(10)
 
+        self._live_headset_enabled = False
         self.live_panel = QFrame(bottom)
         self.live_panel.setStyleSheet("QFrame {background: #172b38; border-radius: 10px;} QLabel {background: transparent; color: #d7f4f0;}")
         live_layout = QVBoxLayout(self.live_panel)
@@ -663,6 +664,10 @@ class DesktopUI(QMainWindow):
         live_layout.addWidget(self.live_phase)
         live_layout.addWidget(self.live_caption)
         live_layout.addWidget(self.live_reply)
+        self.live_headset = QCheckBox("Estou usando fones — permitir interromper falando", self.live_panel)
+        self.live_headset.setToolTip("Use somente com fones. Com alto-falantes, o eco pode ser interpretado como sua fala.")
+        self.live_headset.toggled.connect(lambda checked: setattr(self, "_live_headset_enabled", bool(checked)))
+        live_layout.addWidget(self.live_headset)
         bottom_layout.addWidget(self.live_panel)
         self.live_panel.hide()
 
@@ -1812,6 +1817,7 @@ class DesktopUI(QMainWindow):
             return
         if kind == "closed":
             self.live_panel.hide()
+            self.live_headset.setChecked(False)
             self.live_caption.clear()
             self.live_reply.clear()
             self._hud_audio_level_target = 0
