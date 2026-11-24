@@ -20,7 +20,7 @@ $PayloadZip = Join-Path $BuildRoot 'payload.zip'
 if (Test-Path $BuildRoot) { Remove-Item -Recurse -Force $BuildRoot }
 New-Item -ItemType Directory -Path $PayloadRoot -Force | Out-Null
 
-foreach ($name in @('src', 'scripts', 'assets', 'data', 'json', 'tools')) {
+foreach ($name in @('src', 'scripts', 'assets', 'tools')) {
   $source = Join-Path (Get-Location) $name
   if (Test-Path $source) {
     Copy-Item -Path $source -Destination $PayloadRoot -Recurse -Force
@@ -31,6 +31,11 @@ foreach ($name in @(
     'run_altair.py',
     'run_macro.py',
     'requirements.txt',
+    'requirements-voice-local.txt',
+    'install_hybrid.ps1',
+    'instalar_hybrid.cmd',
+    'iniciar_hybrid.cmd',
+    'test_hybrid.ps1',
     'package.json',
     'package-lock.json',
     'macro.json',
@@ -65,7 +70,7 @@ Compress-Archive -Path (Join-Path $PayloadRoot '*') -DestinationPath $PayloadZip
 $PiperModel = Join-Path (Get-Location) 'assets/piper/voices/pt_BR-faber-medium.onnx'
 $PiperExecutable = Join-Path (Get-Location) 'assets/piper/piper.exe'
 if (-not (Test-Path $PiperModel) -or -not (Test-Path $PiperExecutable)) {
-  Write-Warning 'Assets do Piper ausentes; a voz local nao funcionara ate serem incluidos ou configurado outro provedor de voz.'
+  Write-Warning 'Assets opcionais do Piper ausentes; use a voz local instalada do Windows.'
 }
 
 Write-Output 'Buildando AltairInstaller.exe...'
