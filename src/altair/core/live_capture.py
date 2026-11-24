@@ -18,6 +18,14 @@ def live_capture(emit):
     # Warm only once, before the microphone opens. Keep the model in this worker.
     emit("phase", "Preparando reconhecimento…")
     model = warm_live_model()
+    # Match the Windows default input format if 16 kHz is not supported.
+    rate = RATE
+    try:
+        sd.check_input_settings(channels=1, dtype="float32", samplerate=rate)
+    except Exception:
+        rate = int(sd.query_devices(kind="input")["default_samplerate"])
+        sd.check_input_settings(channels=1, dtype="float32", samplerate=rate)
+    input_block = max(1, int(rate * BLOCK / RATE))
     emit("phase", "Ouvindo • " + model)
     frames = queue.Queue(maxsize=500)
     overflow = threading.Event()
@@ -33,6 +41,7 @@ def live_capture(emit):
     future = None
     last_level = 0
     heard = 0
+    max_level = 0.0
     start = time.monotonic()
 
     def callback(indata, count, info, status):
@@ -53,7 +62,7 @@ def live_capture(emit):
                 emit("partial", last_partial)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        with sd.InputStream(samplerate=RATE, channels=1, dtype="float32", blocksize=BLOCK, callback=callback):
+        with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=input_block, callback=callback):
             while True:
                 collect()
                 if overflow.is_set():
@@ -66,7 +75,10 @@ def live_capture(emit):
                     if started is not None and time.monotonic() - last_voice > 3:
                         raise RuntimeError("Microphone stopped delivering frames")
                     continue
+                if rate != RATE or len(frame) != BLOCK:
+                    frame = np.interp(np.linspace(0, len(frame)-1, BLOCK), np.arange(len(frame)), frame).astype(np.float32)
                 level = float(np.sqrt(np.mean(frame * frame)))
+                max_level = max(max_level, level)
                 if now - last_level >= .08:
                     emit("level", level)
                     last_level = now
@@ -85,6 +97,9 @@ def live_capture(emit):
                         emit("speech_start", True)
                         emit("phase", "Transcrevendo sua fala…")
                     elif now - start > 12:
+                        if max_level < .0005:
+                            emit("phase", "Sem sinal do microfone — confira a entrada padrão do Windows")
+                            record("live-mic", "no-signal")
                         return ""
                     continue
                 audio.append(frame)
