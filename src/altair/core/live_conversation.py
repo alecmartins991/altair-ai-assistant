@@ -18,6 +18,7 @@ class SpeechBuffer:
         self.speak = speak
         self.cancelled = cancelled
         self.pending = ""
+        self.aborted = threading.Event()
         self.items = queue.Queue()
         self.thread = threading.Thread(target=self._play, daemon=True, name="altair-live-speech")
         self.thread.start()
@@ -44,7 +45,7 @@ class SpeechBuffer:
     def _play(self):
         while True:
             part = self.items.get()
-            if part is None or self.cancelled():
+            if part is None or self.cancelled() or self.aborted.is_set():
                 return
             try:
                 self.speak(part)
@@ -53,6 +54,8 @@ class SpeechBuffer:
                 return
 
     def finish(self, flush=True):
+        if not flush:
+            self.aborted.set()
         if flush and self.pending.strip() and not self.cancelled():
             self.items.put(self.pending.strip())
         self.pending = ""
@@ -73,6 +76,9 @@ def answer_turn(llm, text, history, speak, progress, cancelled, command, request
             visual = spoken = str(result)
         if spoken and not cancelled():
             speak(spoken)
+        if visual and not cancelled():
+            history.extend([{"role":"user","content":text},{"role":"assistant","content":visual}])
+            del history[:-12]
         return visual, False
     started = time.monotonic()
     pieces = []
