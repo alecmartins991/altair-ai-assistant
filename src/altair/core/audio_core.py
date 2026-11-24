@@ -417,8 +417,13 @@ def iniciar_loop_audio(
 
     _audio_stop_event.clear()
 
-    if not _stt_enabled():
-        print("Configure a transcrição local ou autorize o provedor remoto para habilitar a entrada de voz.")
+    ready = _stt_enabled()
+    if _manual_listen_mode and os.getenv("ALTAIR_STT_MODE") == "local":
+        from altair.core.local_voice import whisper_path
+        ready = any((whisper_path(name) / "model.bin").is_file() for name in ("small", "base", "large-v3-turbo"))
+    if not ready:
+        if on_audio_error:
+            on_audio_error("Nenhum modelo de transcrição disponível. Confira o reconhecimento local e os modelos instalados.")
         return False
 
     from altair.core.audio_isolation import record
@@ -515,9 +520,9 @@ def iniciar_loop_audio(
 
                         def monitor_input():
                             try:
-                                while not monitor_stop.is_set() and not _audio_stop_event.is_set():
+                                while not monitor_stop.is_set() and not _audio_stop_event.is_set() and headset_mode():
                                     result = CAPTURE_WORKER.call("live_capture", {},
-                                        cancel=lambda: _audio_stop_event.is_set() or (monitor_stop.is_set() and not heard.is_set()),
+                                        cancel=lambda: _audio_stop_event.is_set() or not headset_mode() or (monitor_stop.is_set() and not heard.is_set()),
                                         timeout=120, on_event=monitor_event)
                                     if result:
                                         monitor_result.append(result)
