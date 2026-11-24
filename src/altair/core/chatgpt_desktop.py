@@ -4,10 +4,10 @@ import webbrowser
 import math
 import time
 
-from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF, QBuffer, QIODevice
 from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QRadialGradient, QPolygonF
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton, QComboBox,
-                             QMessageBox, QCheckBox, QFileDialog, QWidget, QLineEdit, QHBoxLayout, QPlainTextEdit)
+                             QMessageBox, QCheckBox, QFileDialog, QWidget, QLineEdit, QHBoxLayout, QPlainTextEdit, QApplication, QDialogButtonBox)
 from pathlib import Path
 
 from altair.core.chatgpt_plan import ChatGPTSession, PlanError
@@ -300,6 +300,9 @@ class ChatGPTCompanion(QDialog):
         repo = QPushButton("Ver projeto Git local")
         repo.clicked.connect(self._git)
         layout.addWidget(repo)
+        vision = QPushButton("Analisar imagem da tela (ChatGPT)")
+        vision.clicked.connect(self._capture)
+        layout.addWidget(vision)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._frame)
         self.timer.start(50)
@@ -351,6 +354,54 @@ class ChatGPTCompanion(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Selecione um projeto Git local")
         if path:
             self._show_text("Git — somente leitura", lambda: git_summary(path))
+
+    def _capture(self):
+        llm = self._get_llm() if self._get_llm else None
+        if llm is None or not hasattr(llm, "analyze_image"):
+            QMessageBox.information(self, "Visão", "Selecione primeiro o provedor ChatGPT e um modelo compatível.")
+            return
+        if QMessageBox.question(self, "Visão", "Capturar a tela principal para uma prévia local? Revise a imagem antes de enviá-la.") != QMessageBox.Yes:
+            return
+        self.hide()
+        QTimer.singleShot(350, lambda: self._preview_capture(llm))
+
+    def _preview_capture(self, llm):
+        screen = QApplication.primaryScreen()
+        pix = screen.grabWindow(0) if screen else None
+        self.show()
+        if pix is None or pix.isNull():
+            QMessageBox.warning(self, "Visão", "Não foi possível capturar a tela.")
+            return
+        # Restrict size and never write the screenshot to a file.
+        if max(pix.width(), pix.height()) > 1920:
+            pix = pix.scaled(1920, 1920, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Revise a captura antes de compartilhar")
+        layout = QVBoxLayout(dlg)
+        note = QLabel("A imagem pode conter dados privados. Só confirme se desejar enviá-la ao modelo ChatGPT selecionado.")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        label = QLabel()
+        label.setPixmap(pix.scaled(720, 430, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        question = QLineEdit("O que está acontecendo nesta tela?")
+        layout.addWidget(question)
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.button(QDialogButtonBox.Ok).setText("Enviar imagem ao ChatGPT")
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        layout.addWidget(buttons)
+        if dlg.exec_() != QDialog.Accepted or not question.text().strip():
+            return
+        buffer = QBuffer()
+        if not buffer.open(QIODevice.WriteOnly) or not pix.save(buffer, "PNG"):
+            QMessageBox.warning(self, "Visão", "Falha ao preparar a imagem.")
+            return
+        png = bytes(buffer.data())
+        buffer.close()
+        prompt = question.text().strip()
+        self._show_text("Análise da tela", lambda: llm.analyze_image(png, prompt))
 
     def _toggle(self, checked):
         if not checked:
