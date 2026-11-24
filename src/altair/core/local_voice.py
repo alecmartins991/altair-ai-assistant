@@ -43,6 +43,7 @@ class WindowsLocalVoice:
         self._lock = threading.Lock()
         self._process = None
         self._voice_lock = threading.Lock()
+        self._interrupted = False
 
     def _run(self, text, path=None):
         if os.name != "nt":
@@ -69,10 +70,11 @@ class WindowsLocalVoice:
                 proc = subprocess.Popen(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
                     stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env=env, creationflags=subprocess.CREATE_NO_WINDOW)
+                self._interrupted = False
                 self._process = proc
             try:
                 proc.communicate(str(text).encode("utf-8"), timeout=180)
-                if proc.returncode != 0 and proc.returncode != 1:
+                if proc.returncode != 0 and not self._interrupted:
                     raise RuntimeError("Falha na voz local do Windows.")
             except subprocess.TimeoutExpired:
                 proc.kill()
@@ -89,6 +91,7 @@ class WindowsLocalVoice:
     def stop(self):
         with self._lock:
             if self._process and self._process.poll() is None:
+                self._interrupted = True
                 self._process.kill()
 
     def save_to_file(self, texto, caminho_arquivo):
