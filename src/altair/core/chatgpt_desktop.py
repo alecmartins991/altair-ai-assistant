@@ -229,9 +229,13 @@ class AvatarFace(QWidget):
                       int((self.phase*50 + i*80)*16), 275*16)
         poly = [(111,40),(209,40),(228,78),(218,143),(183,177),(137,177),(102,143),(92,78)]
         p.setBrush(QColor("#102d40"))
-        p.setPen(QPen(QColor("#6acde9"), 1.7))
+        edge = QPen(QColor("#6acde9"))
+        edge.setWidthF(1.7)
+        p.setPen(edge)
         p.drawPolygon(QPolygonF([QPointF(x,y) for x,y in poly]))
-        p.setPen(QPen(QColor("#317b99"), 1.2))
+        edge = QPen(QColor("#317b99"))
+        edge.setWidthF(1.2)
+        p.setPen(edge)
         for x1,y1,x2,y2 in [(111,40,130,78),(209,40,190,78),(130,78,190,78),
                             (92,78,118,107),(228,78,202,107),(118,107,160,125),
                             (202,107,160,125),(137,177,160,150),(183,177,160,150)]:
