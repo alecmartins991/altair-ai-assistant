@@ -300,6 +300,9 @@ class ChatGPTCompanion(QDialog):
         repo = QPushButton("Ver projeto Git local")
         repo.clicked.connect(self._git)
         layout.addWidget(repo)
+        developer = QPushButton("Abrir Codex no projeto escolhido")
+        developer.clicked.connect(self._codex)
+        layout.addWidget(developer)
         vision = QPushButton("Analisar imagem da tela (ChatGPT)")
         vision.clicked.connect(self._capture)
         layout.addWidget(vision)
@@ -354,6 +357,18 @@ class ChatGPTCompanion(QDialog):
         path = QFileDialog.getExistingDirectory(self, "Selecione um projeto Git local")
         if path:
             self._show_text("Git — somente leitura", lambda: git_summary(path))
+
+    def _codex(self):
+        from altair.core.companion_tools import launch_codex
+        path = QFileDialog.getExistingDirectory(self, "Escolha a pasta de trabalho do Codex")
+        if not path:
+            return
+        if QMessageBox.question(self, "Codex oficial", "Abrir o Codex instalado com permissões limitadas ao projeto? Ele usa sua própria sessão; confira a conta e os créditos.") != QMessageBox.Yes:
+            return
+        try:
+            launch_codex(path)
+        except (OSError, ValueError, RuntimeError) as exc:
+            QMessageBox.warning(self, "Codex", str(exc))
 
     def _capture(self):
         llm = self._get_llm() if self._get_llm else None
