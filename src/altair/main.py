@@ -545,6 +545,7 @@ VOICE_CONFIG_FILE = str(DATA_DIR / "json" / "voice_config.json")
 PROVEDORES_LLM = {
     "groq": "https://api.groq.com/openai/v1/chat/completions",
     "openai": "https://api.openai.com/v1/chat/completions",
+    "chatgpt_plan": "https://api.openai.com/v1/responses",
     "local": "http://127.0.0.1:11434/v1/chat/completions",
 }
 
@@ -610,7 +611,7 @@ def carregar_config_llm() -> Dict[str, str]:
             print("Aviso: falha ao carregar configuracao de LLM:", e)
 
     prov = cfg.get("provider", "groq").strip().lower()
-    if prov not in {"groq", "openai", "local", "custom"}:
+    if prov not in {"groq", "openai", "local", "custom", "chatgpt_plan"}:
         prov = "groq"
     cfg["provider"] = prov
 
@@ -649,6 +650,10 @@ def criar_llm_por_config(cfg: Dict[str, str]) -> GroqDualLLM:
 
     model_main = (cfg.get("model_main") or "").strip()
     model_router = (cfg.get("model_router") or "").strip() or model_main
+
+    if prov == "chatgpt_plan":
+        from altair.core.chatgpt_plan import ChatGPTPlanLLM
+        return ChatGPTPlanLLM(model_main, model_router)
 
     return GroqDualLLM(
         api_key=(cfg.get("api_key") or "").strip(),
@@ -735,7 +740,7 @@ def abrir_interface_llm_config(app_root: tk.Tk) -> None:
         model_main = entry_main.get().strip()
         model_router = entry_router.get().strip()
 
-        if prov not in {"groq", "openai", "local", "custom"}:
+        if prov not in {"groq", "openai", "local", "custom", "chatgpt_plan"}:
             messagebox.showerror("Erro", "Provedor invalido.")
             return
         if not model_main:
@@ -1195,7 +1200,7 @@ def abrir_interface_llm_config(parent: QWidget) -> None:
     layout.addLayout(form)
 
     prov_var = QComboBox(win)
-    prov_var.addItems(["groq", "openai", "local", "custom"])
+    prov_var.addItems(["groq", "openai", "local", "custom", "chatgpt_plan"])
     prov_var.setCurrentText(cfg_atual["provider"])
     form.addRow("Provedor", prov_var)
 
@@ -1223,9 +1228,42 @@ def abrir_interface_llm_config(parent: QWidget) -> None:
     aviso.setStyleSheet("color: #6a6a6a;")
     layout.addWidget(aviso)
 
+    from altair.core.chatgpt_desktop import configure_chatgpt, ChatGPTCompanion
+
+    btn_chatgpt = QPushButton("Continue with ChatGPT")
+    layout.addWidget(btn_chatgpt)
+    btn_companion = QPushButton("Abrir companheiro visual do ChatGPT")
+    layout.addWidget(btn_companion)
+
+    def conectar_chatgpt():
+        cfg = configure_chatgpt(win, cfg_atual)
+        if cfg:
+            salvar_config_llm(cfg)
+            aplicar_config_llm(cfg)
+            if ui:
+                ui.set_ia_status("IA: ChatGPT — plano")
+            win.accept()
+
+    def abrir_companheiro():
+        companion = getattr(parent, "_chatgpt_companion", None)
+        if companion is None or not companion.isVisible():
+            companion = ChatGPTCompanion(parent)
+            parent._chatgpt_companion = companion
+        win.accept()
+        companion.show()
+        companion.raise_()
+
+    btn_chatgpt.clicked.connect(conectar_chatgpt)
+    btn_companion.clicked.connect(abrir_companheiro)
+
     def atualizar_base_url(*_args) -> None:
         prov = prov_var.currentText().strip().lower()
-        if prov in {"groq", "openai"}:
+        is_plan = prov == "chatgpt_plan"
+        entry_key.setEnabled(not is_plan)
+        btn_groq_key.setEnabled(not is_plan)
+        entry_main.setEnabled(not is_plan)
+        entry_router.setEnabled(not is_plan)
+        if prov in {"groq", "openai", "chatgpt_plan"}:
             entry_base.setText(PROVEDORES_LLM[prov])
             entry_base.setReadOnly(True)
         else:
@@ -1246,7 +1284,10 @@ def abrir_interface_llm_config(parent: QWidget) -> None:
         model_main = entry_main.text().strip()
         model_router = entry_router.text().strip()
 
-        if prov not in {"groq", "openai", "local", "custom"}:
+        if prov == "chatgpt_plan":
+            conectar_chatgpt()
+            return
+        if prov not in {"groq", "openai", "local", "custom", "chatgpt_plan"}:
             _qt_message_box(win, QMessageBox.Critical, "Erro", "Provedor invalido.")
             return
         if not model_main:
