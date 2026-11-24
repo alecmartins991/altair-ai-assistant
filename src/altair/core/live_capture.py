@@ -31,7 +31,6 @@ def live_capture(emit):
     partial_at = 0
     partial_n = 0
     future = None
-    first_level = 0
     last_level = 0
     heard = 0
     start = time.monotonic()
@@ -64,6 +63,8 @@ def live_capture(emit):
                 except queue.Empty:
                     if time.monotonic() - start > 12 and started is None:
                         return ""
+                    if started is not None and time.monotonic() - last_voice > 3:
+                        raise RuntimeError("Microphone stopped delivering frames")
                     continue
                 level = float(np.sqrt(np.mean(frame * frame)))
                 if now - last_level >= .08:
@@ -81,6 +82,7 @@ def live_capture(emit):
                         started = last_voice = now
                         audio.extend(pre)
                         pre.clear()
+                        emit("speech_start", True)
                         emit("phase", "Transcrevendo sua fala…")
                     elif now - start > 12:
                         return ""
@@ -102,9 +104,9 @@ def live_capture(emit):
         emit("phase", "Concluindo transcrição…")
         if future is not None:
             last_partial = future.result().strip()
-        # Last partial often already covers the whole speech; otherwise finalize once.
+        # Reuse a partial only if it includes all voiced frames plus a short tail.
         voiced_n = max(0, len(audio) - int((now - last_voice) * RATE / BLOCK))
-        if last_partial and partial_n >= voiced_n and partial_n > 0:
+        if last_partial and partial_n >= voiced_n + 10 and partial_n > 0:
             result = last_partial
         else:
             result = submit(executor, audio, True).result().strip()
