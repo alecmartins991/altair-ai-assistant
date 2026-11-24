@@ -161,18 +161,18 @@ class DesktopUI(QMainWindow):
         self._audio_stop_pending = False
         self._restart_continuous_after_stop = False
         self._bridge = _UiBridge()
-        self._bridge.add_message.connect(self._adicionar_mensagem_impl)
+        self._bridge.add_message.connect(self._adicionar_mensagem_impl, Qt.QueuedConnection)
         self._bridge.show_typing.connect(self._mostrar_digitando_impl)
         self._bridge.remove_typing.connect(self._remover_digitando_impl)
-        self._bridge.set_status.connect(self._set_ia_status_impl)
-        self._bridge.set_mic.connect(self._atualizar_botao_microfone_impl)
-        self._bridge.set_mic_btn_enabled.connect(self._set_mic_button_enabled_impl)
-        self._bridge.bring_front.connect(self._trazer_para_frente_impl)
-        self._bridge.final_response.connect(self._finalizar_resposta_impl)
-        self._bridge.show_error.connect(self._mostrar_erro_impl)
-        self._bridge.set_hud_state.connect(self._set_hud_state_impl)
-        self._bridge.set_hud_level.connect(self._set_hud_audio_level_impl)
-        self._bridge.set_hud_responding.connect(self._set_hud_responding_impl)
+        self._bridge.set_status.connect(self._set_ia_status_impl, Qt.QueuedConnection)
+        self._bridge.set_mic.connect(self._atualizar_botao_microfone_impl, Qt.QueuedConnection)
+        self._bridge.set_mic_btn_enabled.connect(self._set_mic_button_enabled_impl, Qt.QueuedConnection)
+        self._bridge.bring_front.connect(self._trazer_para_frente_impl, Qt.QueuedConnection)
+        self._bridge.final_response.connect(self._finalizar_resposta_impl, Qt.QueuedConnection)
+        self._bridge.show_error.connect(self._mostrar_erro_impl, Qt.QueuedConnection)
+        self._bridge.set_hud_state.connect(self._set_hud_state_impl, Qt.QueuedConnection)
+        self._bridge.set_hud_level.connect(self._set_hud_audio_level_impl, Qt.QueuedConnection)
+        self._bridge.set_hud_responding.connect(self._set_hud_responding_impl, Qt.QueuedConnection)
         self._audio_starting = False
 
         self._typing_widget: Optional[QWidget] = None
@@ -1777,6 +1777,10 @@ class DesktopUI(QMainWindow):
         self.set_hud_responding(True)
         try:
             self._speak_text(texto)
+        except Exception as exc:
+            from altair.core.audio_isolation import record
+            record("text-response-playback", type(exc).__name__)
+            self.adicionar_mensagem("A resposta está disponível por texto. A reprodução de voz falhou; consulte audio-stability.log.", "ia", animar=False)
         finally:
             self.set_hud_responding(False)
 
@@ -2634,6 +2638,7 @@ class DesktopUI(QMainWindow):
                 self.mic_value_label.setText("Aguardando")
 
     def _atualizar_botao_falar_impl(self, ativo: bool) -> None:
+        self._voice_response_enabled = bool(ativo)
         self.btn_falar.setText("Voz: ligada" if ativo else "Voz: desligada")
         self.btn_falar.setIcon(self._icon_pixmap("mic_on" if ativo else "mic", 16))
         self.btn_falar.setToolTip("Desativar fala da resposta" if ativo else "Ativar fala da resposta")
