@@ -535,6 +535,9 @@ def iniciar_audio() -> bool:
         on_speak_start=lambda: ui.set_hud_responding(True),
         on_speak_end=lambda: ui.set_hud_responding(False),
         on_listen_level=ui.set_hud_audio_level,
+        process_command=processar_comando_ui,
+        should_speak=lambda: ui._voice_response_enabled,
+        on_audio_error=lambda message: ui.adicionar_mensagem(message, "ia", animar=False),
     ))
 
 
@@ -863,19 +866,16 @@ def _to_float(valor: str, padrao: float) -> float:
 
 
 def criar_voz_por_config(cfg: Dict[str, str]):
-    if cfg.get("provider") == "windows_local":
-        from altair.core.local_voice import WindowsLocalVoice
-        return WindowsLocalVoice()
-    return ElevenLabsVoice(
-        api_key=(cfg.get("eleven_api_key") or "").strip(),
-        voice_id=(cfg.get("eleven_voice_id") or "").strip(),
-        model_id=(cfg.get("eleven_model_id") or "eleven_multilingual_v2").strip(),
-        fallback_voice=None,
-    )
+    from altair.core.audio_isolation import IsolatedVoice
+    return IsolatedVoice(cfg)
 
 
 def aplicar_config_voz(cfg: Dict[str, str]) -> None:
     global voz
+    from audio_core import parar_loop_audio
+    parar_loop_audio()
+    if voz:
+        voz.stop()
     voz = criar_voz_por_config(cfg)
     configurar_stt_remoto(cfg)
     ia.piper = voz
