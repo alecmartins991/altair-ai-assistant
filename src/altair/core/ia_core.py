@@ -335,8 +335,11 @@ class IALocal:
                   resposta_llm = self.llm.gerar_resposta(comando)
               return resposta_llm if resposta_llm else "Não consegui gerar resposta."
           except Exception as e:
-            print("Erro LLM:", e)
-            return "Erro ao gerar resposta. . No menu configure uma API key de voz e uma de IA."
+            from altair.core.chatgpt_plan import ChatGPTPlanLLM, safe_error
+            if isinstance(self.llm, ChatGPTPlanLLM):
+                return "ChatGPT: " + safe_error(e)
+            print("Erro LLM:", type(e).__name__)
+            return "Não foi possível consultar o provedor de IA selecionado. Confira Configurar API e Modelos."
 
         return "Comando não reconhecido."
         
