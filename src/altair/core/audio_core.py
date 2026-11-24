@@ -18,6 +18,7 @@ PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))
 
 def configurar_stt_remoto(config: dict) -> None:
     """Aplica ao processo a configuracao STT carregada pela aplicacao."""
+    os.environ["ALTAIR_STT_MODE"] = config.get("stt_mode", "remote")
     valores = {
         "ALTAIR_STT_REMOTE_URL": config.get(
             "stt_remote_url", "https://api.elevenlabs.io/v1/speech-to-text"
@@ -222,10 +223,17 @@ def parar_loop_audio() -> bool:
     return bool(th and th.is_alive())
 
 
+def _stt_enabled():
+    if os.getenv("ALTAIR_STT_MODE", "remote") == "local":
+        from altair.core.local_voice import local_stt_ready
+        return local_stt_ready()
+    return _remote_stt_enabled() and external_services_allowed()
+
+
 def ouvir_microfone(on_listen_level=None):
     print("Aguardando fala...")
 
-    if not _remote_stt_enabled():
+    if not _stt_enabled():
         return ""
 
     samplerate = 16000
@@ -271,9 +279,9 @@ def ouvir_microfone(on_listen_level=None):
             channels=1,
             dtype="float32",
             callback=callback,
-        ):
+        ) as stream:
             inicio = time.time()
-            while not _audio_stop_event.is_set():
+            while not _audio_stop_event.is_set() and stream.active:
                 time.sleep(0.1)
                 if time.time() - inicio > max_duration:
                     break
@@ -287,7 +295,11 @@ def ouvir_microfone(on_listen_level=None):
         return ""
 
     audio_data = np.concatenate(audio_chunks, axis=0).flatten()
-    texto = _transcrever_audio_remoto(audio_data)
+    if os.getenv("ALTAIR_STT_MODE", "remote") == "local":
+        from altair.core.local_voice import transcribe_local
+        texto = transcribe_local(audio_data, os.getenv("ALTAIR_STT_REMOTE_LANGUAGE", "pt"))
+    else:
+        texto = _transcrever_audio_remoto(audio_data)
     if _audio_stop_event.is_set():
         return ""
     if texto:
@@ -361,8 +373,8 @@ def iniciar_loop_audio(
 
     _audio_stop_event.clear()
 
-    if not _remote_stt_enabled():
-        print("Configure uma API de transcricao remota para habilitar a entrada de voz.")
+    if not _stt_enabled():
+        print("Configure a transcrição local ou autorize o provedor remoto para habilitar a entrada de voz.")
         return False
 
     escutando = True
