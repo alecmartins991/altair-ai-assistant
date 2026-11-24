@@ -60,5 +60,13 @@ os.environ.setdefault(
     "1" if external_services_allowed() else "0",
 )
 
+# Retain native crash tracebacks without logging prompts, tokens or audio.
+import faulthandler
+from altair.core.audio_isolation import LOG_FILE, record
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+_crash_log = LOG_FILE.open("a", encoding="utf-8")
+faulthandler.enable(file=_crash_log, all_threads=True)
+record("desktop", "startup")
+
 from altair import main  # noqa: E402, F401
 
