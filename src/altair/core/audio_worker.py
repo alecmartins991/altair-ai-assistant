@@ -10,7 +10,10 @@ from pathlib import Path
 from altair.core.audio_isolation import LOG_FILE, record
 
 
-def execute(action, payload):
+def execute(action, payload, emit=lambda kind, value: None):
+    if action == "live_capture":
+        from altair.core.live_capture import live_capture
+        return live_capture(emit)
     if action == "capture":
         from altair.core.audio_core import _ouvir_microfone_impl
         return _ouvir_microfone_impl()
@@ -53,10 +56,10 @@ def execute(action, payload):
     return None
 
 
-def _reply(action, payload):
+def _reply(action, payload, emit=lambda kind, value: None):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            return {"ok": True, "value": execute(action, payload)}
+            return {"ok": True, "value": execute(action, payload, emit)}
     except Exception as exc:
         record("child", type(exc).__name__)
         return {"ok": False, "error": type(exc).__name__}
@@ -68,9 +71,12 @@ def main():
         faulthandler.enable(file=log, all_threads=True)
         try:
             if sys.argv[1] == "resident":
+                protocol_out = sys.stdout
+                def emit(kind, value):
+                    print(json.dumps({"event": kind, "value": value}, ensure_ascii=True), file=protocol_out, flush=True)
                 for line in sys.stdin:
                     req = json.loads(line)
-                    print(json.dumps(_reply(req["action"], req["payload"]), ensure_ascii=True), flush=True)
+                    print(json.dumps(_reply(req["action"], req["payload"], emit), ensure_ascii=True), file=protocol_out, flush=True)
             else:
                 print(json.dumps(_reply(sys.argv[1], json.load(sys.stdin)), ensure_ascii=True), flush=True)
         finally:
