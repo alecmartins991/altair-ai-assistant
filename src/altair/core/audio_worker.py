@@ -33,6 +33,8 @@ def execute(action, payload):
     audio = voice._sintetizar_mp3(text)
     if not audio:
         raise RuntimeError("Empty audio")
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
     pygame.mixer.music.load(io.BytesIO(audio), "mp3")
     try:
         pygame.mixer.music.play()
