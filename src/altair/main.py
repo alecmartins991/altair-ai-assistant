@@ -785,6 +785,13 @@ def _config_voz_padrao() -> Dict[str, str]:
     return {
         "provider": "elevenlabs" if eleven_key else "windows_local",
         "stt_mode": os.getenv("ALTAIR_STT_MODE", "remote" if eleven_key else "local"),
+        "whisper_model": "base",
+        "whisper_device": "cpu",
+        "whisper_terms": "Altair, ChatGPT, GitHub, Lovable, Codex",
+        "mic_threshold": "0.003",
+        "mic_pause": "1.8",
+        "kokoro_voice": "pm_alex",
+        "kokoro_speed": "1.0",
         "assistant_name": os.getenv("ALTAIR_ASSISTANT_NAME", "Altair").strip() or "Altair",
         "piper_model": os.path.join(
             ASSETS_DIR, "piper", "voices", "pt_BR-faber-medium.onnx"
@@ -839,7 +846,7 @@ def carregar_config_voz() -> Dict[str, str]:
         cfg["stt_remote_timeout"] = "60"
 
     prov = cfg.get("provider", "elevenlabs").strip().lower()
-    if prov not in {"elevenlabs", "windows_local"}:
+    if prov not in {"elevenlabs", "windows_local", "kokoro_local"}:
         prov = "windows_local"
     cfg["provider"] = prov
     if migrate_secret:
@@ -1356,20 +1363,62 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
     cfg_atual = carregar_config_voz()
     win = QDialog(parent)
     win.setWindowTitle("Configurar Voz")
-    win.resize(620, 520)
+    win.resize(650, 720)
 
     layout = QVBoxLayout(win)
     form = QFormLayout()
     layout.addLayout(form)
 
     prov_var = QComboBox(win)
-    prov_var.addItems(["windows_local", "elevenlabs"])
+    prov_var.addItems(["kokoro_local", "windows_local", "elevenlabs"])
     prov_var.setCurrentText(cfg_atual["provider"])
     form.addRow("Provedor de voz", prov_var)
     stt_mode = QComboBox(win)
     stt_mode.addItems(["local", "remote"])
     stt_mode.setCurrentText(cfg_atual.get("stt_mode", "local"))
     form.addRow("Reconhecimento de voz", stt_mode)
+
+    from altair.core.local_voice import whisper_path
+    from altair.core.neural_voice import ready as kokoro_ready, VOICES
+    whisper_model = QComboBox(win)
+    for name in ("large-v3-turbo", "small", "base"):
+        whisper_model.addItem(name + (" — instalado" if (whisper_path(name) / "model.bin").is_file() else " — baixar"), name)
+    whisper_model.setCurrentIndex(max(0, whisper_model.findData(cfg_atual["whisper_model"])))
+    form.addRow("Modelo Whisper", whisper_model)
+    device = QComboBox(win)
+    device.addItems(["cpu", "cuda"])
+    device.setCurrentText(cfg_atual["whisper_device"])
+    form.addRow("Processamento (CUDA opcional)", device)
+    terms = QLineEdit(cfg_atual["whisper_terms"])
+    terms.setMaxLength(300)
+    form.addRow("Palavras e nomes técnicos", terms)
+    mic_threshold = QLineEdit(cfg_atual["mic_threshold"])
+    form.addRow("Limiar microfone (menor = sensível)", mic_threshold)
+    mic_pause = QLineEdit(cfg_atual["mic_pause"])
+    form.addRow("Pausa antes de responder (segundos)", mic_pause)
+    kokoro_voice = QComboBox(win)
+    for key, name in VOICES.items():
+        kokoro_voice.addItem(name, key)
+    kokoro_voice.setCurrentIndex(max(0, kokoro_voice.findData(cfg_atual["kokoro_voice"])))
+    form.addRow("Voz neural brasileira", kokoro_voice)
+    speed = QComboBox(win)
+    speed.addItems(["0.8", "0.9", "1.0", "1.1", "1.2"])
+    speed.setCurrentText(cfg_atual["kokoro_speed"])
+    form.addRow("Velocidade da voz neural", speed)
+    preview = QPushButton("Ouvir prévia da voz neural")
+    form.addRow(preview)
+    def preview_voice():
+        if not kokoro_ready():
+            QMessageBox.warning(win, "Voz neural", "Execute atualizar_voz.cmd primeiro.")
+            return
+        from altair.core.chatgpt_desktop import _background
+        from altair.core.audio_isolation import IsolatedVoice
+        player = IsolatedVoice({"provider":"kokoro_local", "kokoro_voice":kokoro_voice.currentData(), "kokoro_speed":speed.currentText()})
+        try:
+            _background(win, "Prévia de voz", lambda: player.speak("Olá! Eu sou o Altair, seu assistente pessoal. Como posso ajudar você hoje?"))
+        except Exception:
+            QMessageBox.warning(win, "Voz neural", "Não foi possível reproduzir a prévia. Veja audio-stability.log.")
+    preview.clicked.connect(preview_voice)
 
     eleven_key = QLineEdit(cfg_atual.get("eleven_api_key", ""))
     eleven_key.setEchoMode(QLineEdit.Password)
@@ -1397,9 +1446,9 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
     form.addRow("STT remoto - Timeout", stt_timeout)
 
     aviso = QLabel(
-        "Windows local usa vozes instaladas no PC. Whisper local precisa do modelo "
-        "instalado pelo setup_voice.ps1. Nenhuma chave é necessária no modo local. "
-        "ElevenLabs e STT remoto são opcionais e podem ter cobranças."
+        "Kokoro e Whisper são locais. Execute atualizar_voz.cmd para baixar os modelos. "
+        "CUDA requer GPU NVIDIA e bibliotecas compatíveis; CPU é a opção padrão. "
+        "ElevenLabs e STT remoto podem cobrar."
     )
     aviso.setWordWrap(True)
     layout.addWidget(aviso)
@@ -1412,6 +1461,13 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
         cfg_novo = {
             "provider": prov,
             "stt_mode": stt_mode.currentText(),
+            "whisper_model": whisper_model.currentData(),
+            "whisper_device": device.currentText(),
+            "whisper_terms": terms.text().strip(),
+            "mic_threshold": mic_threshold.text().strip(),
+            "mic_pause": mic_pause.text().strip(),
+            "kokoro_voice": kokoro_voice.currentData(),
+            "kokoro_speed": speed.currentText(),
             "assistant_name": cfg_atual.get("assistant_name", "Altair"),
             "piper_model": "",
             "piper_length_scale": "1.08",
@@ -1428,7 +1484,7 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
             "stt_remote_timeout": stt_timeout.text().strip() or "60",
         }
 
-        if prov not in {"elevenlabs", "windows_local"}:
+        if prov not in {"elevenlabs", "windows_local", "kokoro_local"}:
             _qt_message_box(
                 win, QMessageBox.Critical, "Erro", "Provedor de voz invalido."
             )
@@ -1450,6 +1506,18 @@ def abrir_interface_voz_config(parent: QWidget) -> None:
             )
             return
 
+        if prov == "kokoro_local" and not kokoro_ready():
+            QMessageBox.warning(win, "Voz neural", "Execute atualizar_voz.cmd primeiro.")
+            return
+        if cfg_novo["stt_mode"] == "local" and not (whisper_path(cfg_novo["whisper_model"]) / "model.bin").is_file():
+            QMessageBox.warning(win, "Whisper", "Modelo não instalado. Execute atualizar_voz.cmd ou escolha um modelo instalado.")
+            return
+        try:
+            if not 0.0005 <= float(cfg_novo["mic_threshold"]) <= 0.08 or not 0.8 <= float(cfg_novo["mic_pause"]) <= 4:
+                raise ValueError()
+        except ValueError:
+            QMessageBox.warning(win, "Microfone", "Limiar: 0.0005 a 0.08. Pausa: 0.8 a 4 segundos.")
+            return
         salvar_config_voz(cfg_novo)
         aplicar_config_voz(cfg_novo)
         if ui:
