@@ -1,4 +1,6 @@
 """Audio process isolation and privacy-safe diagnostics for the desktop launcher."""
+import atexit
+import queue
 import datetime
 import os
 import json
@@ -80,6 +82,94 @@ def run_worker(action, payload, cancel=None, timeout=120):
             process.communicate()
 
 
+class ResidentWorker:
+    """Keep a model warm in its own process. Cancellation kills only that worker."""
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.process = None
+        self.responses = None
+        self.settings = None
+        atexit.register(self.close)
+
+    def close(self):
+        p, self.process = self.process, None
+        if p is not None:
+            try:
+                if p.poll() is None:
+                    p.kill()
+                p.wait(timeout=3)
+            except (OSError, subprocess.TimeoutExpired):
+                pass
+            finally:
+                for stream in (p.stdin, p.stdout):
+                    try:
+                        stream.close()
+                    except (OSError, ValueError):
+                        pass
+
+    def _start(self, settings):
+        self.close()
+        env = os.environ.copy()
+        env["PYTHONPATH"] = str(Path(__file__).resolve().parents[2]) + os.pathsep + env.get("PYTHONPATH", "")
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYGAME_HIDE_SUPPORT_PROMPT"] = "1"
+        env["HF_HUB_OFFLINE"] = "1"
+        self.process = subprocess.Popen([sys.executable, "-m", "altair.core.audio_worker", "resident"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env=env, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        self.settings = settings
+        responses = self.responses = queue.Queue()
+        p = self.process
+        def reader():
+            try:
+                for line in iter(p.stdout.readline, b""):
+                    responses.put(line)
+            except (OSError, ValueError):
+                pass
+            finally:
+                responses.put(None)
+        threading.Thread(target=reader, daemon=True).start()
+
+    def call(self, action, payload, cancel=None, timeout=120):
+        if getattr(sys, "frozen", False):
+            raise AudioFailure("Use a instalação Python do Altair Hybrid.")
+        with self.lock:
+            if cancel and cancel():
+                return None
+            settings = tuple(sorted((k, v) for k, v in os.environ.items()
+                if k.startswith(("ALTAIR_STT_", "ALTAIR_WHISPER_", "ALTAIR_MIC_", "ALTAIR_EXTERNAL_SERVICES_"))))
+            try:
+                if self.process is None or self.process.poll() is not None or self.settings != settings:
+                    self._start(settings)
+                self.process.stdin.write((json.dumps({"action": action, "payload": payload}, ensure_ascii=True) + "\n").encode("ascii"))
+                self.process.stdin.flush()
+                deadline = time.monotonic() + timeout
+                while True:
+                    if cancel and cancel():
+                        self.close()
+                        return None
+                    if time.monotonic() >= deadline:
+                        raise AudioFailure("Tempo limite de áudio.")
+                    try:
+                        line = self.responses.get(timeout=0.1)
+                    except queue.Empty:
+                        continue
+                    if line is None:
+                        raise AudioFailure("Processo de áudio encerrou inesperadamente.")
+                    result = json.loads(line)
+                    if result.get("ok") is not True:
+                        raise AudioFailure("Falha no áudio (" + str(result.get("error", "AudioFailure")) + ").")
+                    return result.get("value")
+            except Exception as exc:
+                record(action, type(exc).__name__)
+                self.close()
+                raise AudioFailure("Falha no processo de áudio. Consulte audio-stability.log.") from None
+
+
+CAPTURE_WORKER = ResidentWorker()
+KOKORO_WORKER = ResidentWorker()
+
+
 class IsolatedVoice:
     """Serialize speech and pause capture; local System.Speech already uses a child."""
     def __init__(self, config):
@@ -103,6 +193,9 @@ class IsolatedVoice:
                     record("speech", "start")
                     if self._local:
                         self._local.speak(text)
+                    elif self.config.get("provider") == "kokoro_local":
+                        KOKORO_WORKER.call("speak", {"config": self.config, "text": str(text)},
+                                           cancel=self._cancel.is_set, timeout=180)
                     else:
                         run_worker("speak", {"config": self.config, "text": str(text)},
                                    cancel=self._cancel.is_set, timeout=180)
@@ -121,4 +214,6 @@ class IsolatedVoice:
     def save_to_file(self, text, path):
         if self._local:
             return self._local.save_to_file(text, path)
+        if self.config.get("provider") == "kokoro_local":
+            return KOKORO_WORKER.call("save", {"config": self.config, "text": str(text), "path": str(path)}, timeout=180)
         return run_worker("save", {"config": self.config, "text": str(text), "path": str(path)}, timeout=180)
