@@ -1518,7 +1518,11 @@ cfg_voz_inicial = carregar_config_voz()
 configurar_stt_remoto(cfg_voz_inicial)
 configurar_nome_assistente(cfg_voz_inicial.get("assistant_name", "Altair"))
 voz = criar_voz_por_config(cfg_voz_inicial)
+primeira_execucao_hybrid = os.getenv("ALTAIR_HYBRID_FIRST_RUN") == "1" and not os.path.exists(LLM_CONFIG_FILE)
 cfg_llm_inicial = carregar_config_llm()
+if primeira_execucao_hybrid:
+    cfg_llm_inicial.update(provider="chatgpt_plan", api_key="", base_url=PROVEDORES_LLM["chatgpt_plan"],
+                           model_main="", model_router="")
 llm_groq = criar_llm_por_config(cfg_llm_inicial)
 if not llm_groq.disponivel():
     print("AVISO: API key nao configurada. O fallback local continuara ativo.")
@@ -1562,6 +1566,38 @@ else:
 
 welcome_text = ia.responder("saudacao")
 ui.adicionar_mensagem(welcome_text, "ia")
-voz.speak(welcome_text)
+
+def iniciar_hybrid_primeira_vez():
+    from PyQt5.QtWidgets import QMessageBox
+    from altair.core.privacy import external_services_allowed, set_external_services_allowed
+    from altair.core.chatgpt_desktop import configure_chatgpt, ChatGPTCompanion
+    if not external_services_allowed():
+        if QMessageBox.question(ui, "Configurar Altair", "Usar sua conta ChatGPT? Isso envia os comandos e contextos selecionados à OpenAI. Microfone e fala locais continuam no computador.") != QMessageBox.Yes:
+            return
+        set_external_services_allowed(True)
+        if hasattr(ui, "_action_external_services"):
+            ui._action_external_services.blockSignals(True)
+            ui._action_external_services.setChecked(True)
+            ui._action_external_services.blockSignals(False)
+        ui._external_services_allowed = True
+    cfg = configure_chatgpt(ui, cfg_llm_inicial)
+    if cfg:
+        salvar_config_llm(cfg)
+        aplicar_config_llm(cfg)
+        ui.set_ia_status("IA: ChatGPT — plano")
+        companion = ChatGPTCompanion(ui, get_llm=lambda: ia.llm)
+        ui._chatgpt_companion = companion
+        companion.show()
+
+if primeira_execucao_hybrid:
+    QTimer.singleShot(350, iniciar_hybrid_primeira_vez)
+else:
+    # Do not block UI startup or abort if an audio device/voice is unavailable.
+    def falar_boas_vindas():
+        try:
+            voz.speak(welcome_text)
+        except Exception:
+            pass
+    threading.Thread(target=falar_boas_vindas, daemon=True).start()
 
 ui.run()
