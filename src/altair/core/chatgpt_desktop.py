@@ -1,10 +1,13 @@
 """Desktop controls for the ChatGPT plan and a separate visual companion."""
 import threading
 import webbrowser
+import math
+import time
 
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QRectF, QPointF
+from PyQt5.QtGui import QPainter, QColor, QPen, QBrush, QRadialGradient, QPolygonF
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton, QComboBox,
-                             QMessageBox, QCheckBox, QFileDialog)
+                             QMessageBox, QCheckBox, QFileDialog, QWidget, QLineEdit, QHBoxLayout, QPlainTextEdit)
 from pathlib import Path
 
 from altair.core.chatgpt_plan import ChatGPTSession, PlanError
@@ -190,42 +193,164 @@ def configure_chatgpt(parent, initial):
     return result or None
 
 
-class ChatGPTCompanion(QDialog):
-    """Optional avatar for the official ChatGPT site; not a session bridge.
-
-    The meter computes amplitude only, from all system output, when enabled.
-    No recorded samples are saved, transcribed or transmitted.
-    """
+class AvatarFace(QWidget):
+    """Vector holographic avatar, animated with measured amplitude, no 3D dependencies."""
     def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumHeight(190)
+        self.level = 0.0
+        self.phase = 0.0
+        self.active = False
+
+    def frame(self, level, active=False):
+        self.level += (min(1.0, max(0.0, level * 9)) - self.level) * 0.38
+        self.phase += 0.07
+        self.active = active
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        scale = min(self.width()/320, self.height()/220)
+        p.translate(self.width()/2, self.height()/2)
+        p.scale(scale, scale)
+        p.translate(-160, -110)
+        glow = QRadialGradient(160, 105, 105)
+        glow.setColorAt(0, QColor(20, 126, 180, 85))
+        glow.setColorAt(1, QColor(20, 126, 180, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(QBrush(glow))
+        p.drawEllipse(QRectF(55, 0, 210, 210))
+        p.setBrush(Qt.NoBrush)
+        for i, radius in enumerate((79, 93, 103)):
+            pen = QPen(QColor(48, 166, 211, 110), 1)
+            p.setPen(pen)
+            p.drawArc(QRectF(160-radius, 105-radius, radius*2, radius*2),
+                      int((self.phase*50 + i*80)*16), 275*16)
+        poly = [(111,40),(209,40),(228,78),(218,143),(183,177),(137,177),(102,143),(92,78)]
+        p.setBrush(QColor("#102d40"))
+        p.setPen(QPen(QColor("#6acde9"), 1.7))
+        p.drawPolygon(QPolygonF([QPointF(x,y) for x,y in poly]))
+        p.setPen(QPen(QColor("#317b99"), 1.2))
+        for x1,y1,x2,y2 in [(111,40,130,78),(209,40,190,78),(130,78,190,78),
+                            (92,78,118,107),(228,78,202,107),(118,107,160,125),
+                            (202,107,160,125),(137,177,160,150),(183,177,160,150)]:
+            p.drawLine(QPointF(x1,y1),QPointF(x2,y2))
+        blink = 2 if int(self.phase*10)%61 in (0,1) else 8
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#b3f2ff" if self.active else "#7ddbf7"))
+        p.drawRoundedRect(QRectF(113,92-blink/2,32,blink),3,3)
+        p.drawRoundedRect(QRectF(175,92-blink/2,32,blink),3,3)
+        p.setPen(QPen(QColor("#7fdefa"), 2))
+        p.setBrush(QColor("#091925"))
+        h = 2 + 16*self.level
+        p.drawRoundedRect(QRectF(143,139-h/2,34,h),3,3)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor("#5ccdef"))
+        for i in range(39):
+            h = 3 + (2 + 25*self.level)*abs(math.sin(i*1.4+self.phase*3))
+            p.drawRoundedRect(QRectF(82+i*4,202-h/2,2.5,h),1,1)
+        p.end()
+
+
+class ChatGPTCompanion(QDialog):
+    """Local companion, separate from the official ChatGPT session."""
+    def __init__(self, parent=None, get_llm=None):
         super().__init__(parent, Qt.Tool | Qt.WindowStaysOnTopHint)
         self.setWindowTitle("Altair — companheiro visual")
-        self.resize(330, 300)
-        self.setStyleSheet("QDialog {background:#101e2b;color:#d4f5ff;} QLabel {color:#d4f5ff;} QPushButton {padding:8px;}")
+        self.resize(390, 560)
+        self.setStyleSheet("QDialog {background:#101e2b;color:#d4f5ff;} QLabel {color:#d4f5ff;} QPushButton {padding:7px;} QCheckBox{color:#d4f5ff;}")
         self._stop = threading.Event()
         self._thread = None
         self._level = 0.0
         self._failure = False
+        self._parent = parent
+        self._get_llm = get_llm
         layout = QVBoxLayout(self)
-        self.face = QLabel("◉     ◉\n   ─   ")
-        self.face.setAlignment(Qt.AlignCenter)
-        self.face.setStyleSheet("font-size:48px;color:#72dfff;background:#152e43;border-radius:24px;padding:16px;")
+        self.face = AvatarFace(self)
         layout.addWidget(self.face)
-        self.state = QLabel("Modo visual • sem conexão à conversa")
+        self.state = QLabel("Altair • ChatGPT oficial em janela separada")
         self.state.setWordWrap(True)
         layout.addWidget(self.state)
         launch = QPushButton("Abrir ChatGPT oficial")
         launch.clicked.connect(lambda: webbrowser.open("https://chatgpt.com/"))
         layout.addWidget(launch)
-        self.audio = QCheckBox("Animar com áudio do computador (opcional)")
-        self.audio.setStyleSheet("color:#d4f5ff;")
-        layout.addWidget(self.audio)
+        self.audio = QCheckBox("Animar com o áudio do computador")
         self.audio.toggled.connect(self._toggle)
-        info = QLabel("Reage ao volume de todos os sons do PC. Não identifica a voz do ChatGPT nem sincroniza mensagens.")
+        layout.addWidget(self.audio)
+        info = QLabel("O medidor reage a todos os sons do PC, não apenas ao ChatGPT. Não grava, transcreve ou envia áudio.")
         info.setWordWrap(True)
         layout.addWidget(info)
+
+        self.prompt = QLineEdit()
+        self.prompt.setPlaceholderText("Comando para o Altair local…")
+        layout.addWidget(self.prompt)
+        actions = QHBoxLayout()
+        send = QPushButton("Enviar ao Altair")
+        send.clicked.connect(self._send)
+        self.prompt.returnPressed.connect(self._send)
+        actions.addWidget(send)
+        stop = QPushButton("Parar fala")
+        stop.clicked.connect(self._stop_speech)
+        actions.addWidget(stop)
+        layout.addLayout(actions)
+        diagnostics = QPushButton("Diagnóstico do computador")
+        diagnostics.clicked.connect(self._diagnostics)
+        layout.addWidget(diagnostics)
+        repo = QPushButton("Ver projeto Git local")
+        repo.clicked.connect(self._git)
+        layout.addWidget(repo)
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._frame)
-        self.timer.start(70)
+        self.timer.start(50)
+
+    def _send(self):
+        text = self.prompt.text().strip()
+        if not text or self._parent is None:
+            return
+        if QMessageBox.question(self, "Altair local", "Enviar este comando ao Altair? Ele pode acionar as automações existentes.") != QMessageBox.Yes:
+            return
+        # Use the original UI's public chat pipeline; never send to the official website.
+        self._parent.entry.setPlainText(text)
+        self._parent._enviar()
+        self.prompt.clear()
+
+    def _stop_speech(self):
+        if self._parent is not None:
+            try:
+                self._parent._stop_speech()
+            except Exception:
+                pass
+
+    def _show_text(self, title, function):
+        try:
+            text = _background(self, title, function)
+        except PlanError as exc:
+            QMessageBox.warning(self, title, str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(560, 400)
+        layout = QVBoxLayout(dialog)
+        view = QPlainTextEdit()
+        view.setReadOnly(True)
+        view.setPlainText(text)
+        layout.addWidget(view)
+        copy = QPushButton("Copiar resultado")
+        copy.clicked.connect(view.selectAll)
+        copy.clicked.connect(view.copy)
+        layout.addWidget(copy)
+        dialog.exec_()
+
+    def _diagnostics(self):
+        from altair.core.companion_tools import system_summary
+        self._show_text("Diagnóstico local", system_summary)
+
+    def _git(self):
+        from altair.core.companion_tools import git_summary
+        path = QFileDialog.getExistingDirectory(self, "Selecione um projeto Git local")
+        if path:
+            self._show_text("Git — somente leitura", lambda: git_summary(path))
 
     def _toggle(self, checked):
         if not checked:
@@ -260,17 +385,26 @@ class ChatGPTCompanion(QDialog):
     def _frame(self):
         if self._failure:
             self.audio.setChecked(False)
-            self.state.setText("Medidor de áudio indisponível neste dispositivo.")
+            self.state.setText("Medidor indisponível neste dispositivo.")
             self._failure = False
-            return
-        if not self.audio.isChecked():
-            self.face.setText("◉     ◉\n   ─   ")
-            return
-        talking = self._level > 0.012
-        self.face.setText("◉     ◉\n   " + ("◯" if talking else "─") + "   ")
-        self.state.setText("Áudio do PC ativo" if talking else "Aguardando áudio do PC")
+        talking = self.audio.isChecked() and self._level > 0.012
+        busy = bool(getattr(self._parent, "_processing_count", 0))
+        self.face.frame(self._level if talking else 0, busy or talking)
+        if busy:
+            self.state.setText("Altair local processando…")
+        elif talking:
+            self.state.setText("Áudio do PC ativo")
+        elif self.audio.isChecked():
+            self.state.setText("Aguardando áudio do PC")
+        else:
+            self.state.setText("Altair • ChatGPT oficial em janela separada")
 
     def done(self, result):
         self._stop.set()
         self.timer.stop()
         super().done(result)
+
+    def closeEvent(self, event):
+        self._stop.set()
+        self.timer.stop()
+        super().closeEvent(event)
