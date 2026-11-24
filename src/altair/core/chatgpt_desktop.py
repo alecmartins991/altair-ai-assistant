@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton, QComboBo
                              QMessageBox, QCheckBox, QFileDialog, QWidget, QLineEdit, QHBoxLayout, QPlainTextEdit, QApplication, QDialogButtonBox)
 from pathlib import Path
 
-from altair.core.chatgpt_plan import ChatGPTSession, ChatGPTPlanLLM, PlanError
+from altair.core.chatgpt_plan import ChatGPTSession, ChatGPTPlanLLM, PlanError, safe_error
 
 
 def _background(parent, title, function):
@@ -28,9 +28,7 @@ def _background(parent, title, function):
         try:
             result["value"] = function()
         except Exception as exc:
-            result["error"] = str(exc) if isinstance(exc, (PlanError, PermissionError)) else (
-                "Não foi possível concluir. Verifique a rede, dependências e autorização."
-            )
+            result["error"] = safe_error(exc)
         finally:
             result["done"] = True
 
@@ -49,7 +47,18 @@ def configure_chatgpt(parent, initial):
     session = ChatGPTSession()
     dialog = QDialog(parent)
     dialog.setWindowTitle("ChatGPT — uso do plano")
-    dialog.resize(500, 560)
+    dialog.resize(550, 640)
+    dialog.setStyleSheet("""
+        QDialog { background: #0d1919; }
+        QLabel { color: #e5f4f3; }
+        QPushButton { color:#e7f8f3; background:#1c3734; border:1px solid #48796d;
+                      border-radius:7px; padding:8px; min-height:20px; }
+        QPushButton:hover { background:#28544b; }
+        QPushButton:disabled { color:#71817d; background:#142321; border:1px solid #263b36; }
+        QPushButton:checked { color:#e3fff2; background:#20644a; border:2px solid #80e5ae; }
+        QComboBox { color:#e7f8f3; background:#1c3734; min-height:28px; }
+        QComboBox:disabled { color:#71817d; background:#142321; }
+    """)
     layout = QVBoxLayout(dialog)
     status = QLabel()
     status.setWordWrap(True)
@@ -60,7 +69,9 @@ def configure_chatgpt(parent, initial):
     usage = QPushButton("Abrir limites e créditos no ChatGPT")
     usage.clicked.connect(lambda: webbrowser.open("https://chatgpt.com/settings/usage"))
     layout.addWidget(usage)
-    consent = QCheckBox("Conferi que o uso de créditos extras está desativado.")
+    consent = QPushButton("Confirmar: créditos extras desativados")
+    consent.setCheckable(True)
+    consent.toggled.connect(lambda checked: consent.setText("✓ Créditos extras desativados — confirmado" if checked else "Confirmar: créditos extras desativados"))
     layout.addWidget(consent)
     login = QPushButton("Continue with ChatGPT")
     layout.addWidget(login)
@@ -77,7 +88,8 @@ def configure_chatgpt(parent, initial):
     layout.addWidget(apply)
     test = QPushButton("Testar resposta do ChatGPT")
     layout.addWidget(test)
-    memory = QCheckBox("Guardar contexto e últimas conversas neste computador (opcional)")
+    memory = QPushButton("Memória local: desligada (opcional)")
+    memory.setCheckable(True)
     layout.addWidget(memory)
     import_context = QPushButton("Importar contexto de projeto (.txt ou .md)")
     clear_memory = QPushButton("Apagar memória local desta conta")
@@ -126,6 +138,8 @@ def configure_chatgpt(parent, initial):
         account = session.load()
         status.setText(("Conta: " + (account.get("email") or "registrada") + "\n") if account.get("client_id") else "Sem conta registrada.\n")
         status.setText(status.text() + ("Uso do plano autorizado." if session.authorized() else "Uso do plano não autorizado."))
+        if not consent.isChecked():
+            status.setText(status.text() + "\\nConfirme os créditos extras para habilitar o login.")
         logout.setEnabled(bool(account.get("access_token")))
         refresh.setEnabled(session.authorized() and consent.isChecked())
         login.setEnabled(consent.isChecked())
@@ -134,15 +148,18 @@ def configure_chatgpt(parent, initial):
         memory.blockSignals(True)
         memory.setChecked(session.memory().get("enabled") is True)
         memory.blockSignals(False)
+        memory.setText("✓ Memória local: ligada" if memory.isChecked() else "Memória local: desligada (opcional)")
+        main.setEnabled(session.authorized() and main.count() > 0)
+        router.setEnabled(session.authorized() and router.count() > 0)
         memory.setEnabled(session.authorized())
         import_context.setEnabled(session.authorized() and memory.isChecked())
         clear_memory.setEnabled(bool(account.get("client_id")))
 
     def models():
         try:
-            items = _background(dialog, "Consultar modelos", session.models)
             main.clear()
             router.clear()
+            items = _background(dialog, "Consultar modelos", session.models)
             for slug, name in items:
                 main.addItem(name, slug)
                 router.addItem(name, slug)
@@ -161,8 +178,10 @@ def configure_chatgpt(parent, initial):
             _background(dialog, "Conectar ChatGPT", session.sign_in)
             if session.authorized():
                 models()
+            else:
+                QMessageBox.warning(dialog, "ChatGPT", "Conta identificada, mas sem permissão de uso do plano. Autorize o acesso no ChatGPT e tente novamente.")
         except PlanError as exc:
-            QMessageBox.warning(dialog, "ChatGPT", str(exc))
+            QMessageBox.warning(dialog, "Falha no login — diagnóstico", str(exc))
         sync()
 
     def disconnect():
