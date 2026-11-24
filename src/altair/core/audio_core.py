@@ -286,7 +286,8 @@ def _ouvir_microfone_impl(on_listen_level=None):
                 if time.time() - inicio > max_duration:
                     break
     except Exception:
-        pass
+        # Propagate device failures to the supervisor; never spin silently.
+        raise
 
     if _audio_stop_event.is_set():
         return ""
@@ -468,6 +469,8 @@ def iniciar_loop_audio(
                         resposta_visual = str(resposta).strip()
                         resposta_fala = resposta_visual
 
+                    if _audio_stop_event.is_set():
+                        break
                     if resposta_visual:
                         adicionar_mensagem(resposta_visual, "ia")
                     if resposta_fala:
