@@ -406,6 +406,7 @@ def iniciar_loop_audio(
     on_audio_error=None,
     on_live_event=None,
     live_answer=None,
+    headset_mode=None,
 ):
     global _audio_loop_thread, _live_voice
 
@@ -435,6 +436,7 @@ def iniciar_loop_audio(
             tempo_timeout = 30
             history = []
             failures = 0
+            next_text = ""
 
             def event(kind, value):
                 if _audio_stop_event.is_set():
@@ -465,7 +467,10 @@ def iniciar_loop_audio(
                 if live:
                     event("phase", "Ouvindo…")
                 try:
-                    texto = ouvir_microfone(on_listen_level=on_listen_level, on_event=event, live=live)
+                    if next_text:
+                        texto, next_text = next_text, ""
+                    else:
+                        texto = ouvir_microfone(on_listen_level=on_listen_level, on_event=event, live=live)
                     failures = 0
                 except Exception as exc:
                     failures += 1
@@ -491,6 +496,39 @@ def iniciar_loop_audio(
                     event("partial", "")
                     adicionar_mensagem(texto, "usuario")
                     event("phase", "Pensando…")
+                    # Full duplex is opt-in for headphones. Speakers use half duplex
+                    # until a validated acoustic echo canceller is available.
+                    monitor = None
+                    monitor_stop = threading.Event()
+                    heard = threading.Event()
+                    monitor_result = []
+                    if headset_mode and headset_mode() and os.getenv("ALTAIR_STT_MODE") == "local":
+                        from altair.core.audio_isolation import CAPTURE_WORKER
+
+                        def monitor_event(kind, value):
+                            if kind == "speech_start" and not monitor_stop.is_set():
+                                heard.set()
+                                interromper_resposta_live()
+                                event("phase", "Ouvindo sua interrupção…")
+                            elif kind in ("partial", "level") and heard.is_set():
+                                event(kind, value)
+
+                        def monitor_input():
+                            try:
+                                while not monitor_stop.is_set() and not _audio_stop_event.is_set():
+                                    result = CAPTURE_WORKER.call("live_capture", {},
+                                        cancel=lambda: _audio_stop_event.is_set() or (monitor_stop.is_set() and not heard.is_set()),
+                                        timeout=120, on_event=monitor_event)
+                                    if result:
+                                        monitor_result.append(result)
+                                        return
+                                    if heard.is_set():
+                                        return
+                            except Exception as exc:
+                                record("live-headset", type(exc).__name__)
+
+                        monitor = threading.Thread(target=monitor_input, daemon=True, name="altair-live-headset")
+                        monitor.start()
                     try:
                         visual, streamed = live_answer(texto, history, falar_altair,
                             lambda text: event("answer", text),
@@ -503,6 +541,11 @@ def iniciar_loop_audio(
                             from altair.core.chatgpt_plan import safe_error
                             adicionar_mensagem("Altair Live: " + safe_error(exc), "ia")
                     finally:
+                        monitor_stop.set()
+                        if monitor:
+                            monitor.join()
+                        if monitor_result and not _audio_stop_event.is_set():
+                            next_text = monitor_result[0]
                         event("answer", "")
                     continue
                 if _manual_listen_mode:
