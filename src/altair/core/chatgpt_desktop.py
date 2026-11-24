@@ -10,7 +10,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QPushButton, QComboBo
                              QMessageBox, QCheckBox, QFileDialog, QWidget, QLineEdit, QHBoxLayout, QPlainTextEdit, QApplication, QDialogButtonBox)
 from pathlib import Path
 
-from altair.core.chatgpt_plan import ChatGPTSession, PlanError
+from altair.core.chatgpt_plan import ChatGPTSession, ChatGPTPlanLLM, PlanError
 
 
 def _background(parent, title, function):
@@ -49,7 +49,7 @@ def configure_chatgpt(parent, initial):
     session = ChatGPTSession()
     dialog = QDialog(parent)
     dialog.setWindowTitle("ChatGPT — uso do plano")
-    dialog.resize(480, 360)
+    dialog.resize(500, 560)
     layout = QVBoxLayout(dialog)
     status = QLabel()
     status.setWordWrap(True)
@@ -75,6 +75,8 @@ def configure_chatgpt(parent, initial):
     layout.addWidget(router)
     apply = QPushButton("Usar plano ChatGPT no Altair")
     layout.addWidget(apply)
+    test = QPushButton("Testar resposta do ChatGPT")
+    layout.addWidget(test)
     memory = QCheckBox("Guardar contexto e últimas conversas neste computador (opcional)")
     layout.addWidget(memory)
     import_context = QPushButton("Importar contexto de projeto (.txt ou .md)")
@@ -128,6 +130,7 @@ def configure_chatgpt(parent, initial):
         refresh.setEnabled(session.authorized() and consent.isChecked())
         login.setEnabled(consent.isChecked())
         apply.setEnabled(session.authorized() and consent.isChecked() and main.count() > 0)
+        test.setEnabled(apply.isEnabled())
         memory.blockSignals(True)
         memory.setChecked(session.memory().get("enabled") is True)
         memory.blockSignals(False)
@@ -173,6 +176,19 @@ def configure_chatgpt(parent, initial):
         router.clear()
         sync()
 
+    def test_connection():
+        model = main.currentData()
+        if not model or not consent.isChecked():
+            return
+        if QMessageBox.question(dialog, "Teste de conexão", "Enviar uma solicitação curta, usando a franquia da sua conta?") != QMessageBox.Yes:
+            return
+        try:
+            llm = ChatGPTPlanLLM(model, session=session)
+            answer = _background(dialog, "Testando ChatGPT", lambda: llm._chat(model=model, messages=[{"role":"user","content":"Responda apenas: conexão funcionando."}]))
+            QMessageBox.information(dialog, "Resposta recebida", answer or "Resposta concluída sem texto.")
+        except PlanError as exc:
+            QMessageBox.warning(dialog, "Teste não concluído", str(exc))
+
     def save():
         if not session.authorized() or not consent.isChecked() or not main.currentData():
             return
@@ -187,6 +203,7 @@ def configure_chatgpt(parent, initial):
     login.clicked.connect(connect)
     logout.clicked.connect(disconnect)
     refresh.clicked.connect(models)
+    test.clicked.connect(test_connection)
     apply.clicked.connect(save)
     sync()
     dialog.exec_()
@@ -298,6 +315,9 @@ class ChatGPTCompanion(QDialog):
         stop.clicked.connect(self._stop_speech)
         actions.addWidget(stop)
         layout.addLayout(actions)
+        mic = QPushButton("Ativar / desativar microfone do Altair")
+        mic.clicked.connect(self._toggle_mic)
+        layout.addWidget(mic)
         diagnostics = QPushButton("Diagnóstico do computador")
         diagnostics.clicked.connect(self._diagnostics)
         layout.addWidget(diagnostics)
@@ -324,6 +344,10 @@ class ChatGPTCompanion(QDialog):
         self._parent.entry.setPlainText(text)
         self._parent._enviar()
         self.prompt.clear()
+
+    def _toggle_mic(self):
+        if self._parent is not None:
+            self._parent._iniciar_audio_seguro()
 
     def _stop_speech(self):
         if self._parent is not None:
