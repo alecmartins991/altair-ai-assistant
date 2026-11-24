@@ -1,49 +1,46 @@
-# Altair + ChatGPT — integração híbrida experimental
+# Altair + ChatGPT — versão de testes Windows
 
-## Executar no Windows
+## Instalação e primeiro login
 
-Esta branch preserva a main e os provedores atuais. Use uma cópia local de teste:
+1. Baixe e extraia o ZIP da branch altair-chatgpt-hybrid ou clone a branch com Git.
+2. Instale Python 3.10 x64 se ainda não estiver instalado.
+3. Execute instalar_hybrid.cmd. Instala dependências e baixa o modelo Whisper base para uso offline posterior. Precisa de internet nesta etapa. Para omitir o download, execute install_hybrid.ps1 -SkipVoice.
+4. Execute iniciar_hybrid.cmd. O perfil de teste fica em %LOCALAPPDATA%\Altair-Hybrid; o Altair original fica separado.
+5. Em Menu > Privacidade e dados, autorize serviços externos se desejar usar ChatGPT.
+6. Em API e modelos, clique Continue with ChatGPT. Confira que o uso de créditos extras está desabilitado na conta em https://chatgpt.com/settings/usage e, depois do registro, confira também os controles do agente. Autorize no navegador, consulte e selecione um modelo da conta e aplique.
+7. Em Configurar Voz, selecione windows_local e reconhecimento local. Use o microfone do Altair e as vozes instaladas do Windows. Se necessário, adicione uma voz portuguesa nas configurações do Windows.
+8. Abra o companheiro visual do ChatGPT nas configurações de IA. Pode abrir o ChatGPT oficial em janela separada e usar o modo de voz oficial, ou enviar comandos ao Altair local. O avatar reage ao volume de todos os sons do PC somente se habilitado.
 
-```powershell
-git clone --branch altair-chatgpt-hybrid https://github.com/alecmartins991/altair-ai-assistant.git altair-hybrid
-cd altair-hybrid
-py -3.10 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r requirements.txt
-.\.venv\Scripts\python.exe run_altair.py
-```
+Não precisa gerar API Key da OpenAI. O uso está sujeito à elegibilidade, permissões, franquia e configuração de créditos da conta; o código não compra créditos automaticamente nem pode verificar programaticamente a cobrança. Outros provedores são opcionais e podem cobrar.
 
-1. Em Menu > Privacidade e dados, permita serviços externos se desejar usar o modelo.
-2. Abra a configuração de API e modelos e selecione Continue with ChatGPT.
-3. Confira em https://chatgpt.com/settings/usage que créditos adicionais estão desativados para o app. A confirmação local não controla nem verifica a cobrança na conta. Depois de registrar o app, confira de novo as permissões específicas dele antes de realizar inferência.
-4. Autorize no navegador, escolha um modelo do catálogo da conta e aplique. Não cole tokens ou cookies.
-5. Opcional: habilite memória local e importe um resumo .txt/.md de até 12.000 caracteres. O contexto é enviado ao modelo somente quando a memória estiver habilitada. Até seis pares recentes de conversa são mantidos, com limite por mensagem. Desative ou apague nas configurações.
-6. Para a experiência visual com o ChatGPT oficial, abra o companheiro visual e clique em Abrir ChatGPT oficial. Inicie a conversa de voz no ChatGPT, se disponível na conta. Habilite opcionalmente o medidor de áudio do computador.
+## Recursos desta versão no código
 
-## O que está implementado no código
+- OAuth oficial de registro dinâmico com loopback, PKCE, state, nonce e validação do ID token.
+- Sessão protegida localmente com DPAPI no Windows, renovação e tentativa de revogação ao desconectar. Um registro local de conta; não compartilhar tokens ou cookies.
+- Modelos da conta e inferência via Responses pública com SSE. Sem fallback automático para outro provedor pago.
+- Memória local opcional separada por registro; importação manual de resumo .txt/.md de até 12.000 caracteres, até seis pares de conversa, opção de apagar.
+- Whisper local, sem fallback remoto quando modo local selecionado; voz local System.Speech do Windows. O modelo é baixado uma única vez pelo setup_voice.ps1.
+- Avatar vetorial flutuante, olhos animados, boca por amplitude sonora, indicador de processamento, atalho para ChatGPT oficial, campo de comandos para o Altair e botão de parar fala.
+- Captura da tela principal com prévia e envio confirmado pelo usuário ao modelo compatível; não grava imagem em disco nem captura continuamente.
+- Diagnóstico de CPU, RAM e disco; inspeção local do Git somente leitura (status, log e diff --stat).
+- Atalho para abrir o executável oficial Codex CLI já instalado no PATH, na pasta selecionada, em sandbox workspace-write e aprovação on-request. Codex usa sua própria sessão; não usa os tokens do Altair. Não faz push automaticamente.
+- Instalador por script e launcher; receita de build do instalador EXE.
 
-- OAuth de registro dinâmico, callback de loopback, PKCE, state, nonce e validação OIDC/JWKS.
-- Credenciais fora do repositório, protegidas por DPAPI no Windows; arquivos com permissão restrita em Unix. Um registro local nesta versão experimental, renovação de sessão e tentativa de revogação ao desconectar.
-- Catálogo de modelos da conta e inferência via Responses SSE pública, sem API key e sem fallback automático para outro provedor pago.
-- Integração com o roteamento existente do Altair.
-- Memória local opt-in separada por registro, com importação manual.
-- Companheiro flutuante com rosto simples, atalho para ChatGPT oficial e animação por nível de áudio do sistema. O áudio não é gravado em disco, transcrito ou enviado pelo medidor. Não identifica especificamente áudio do ChatGPT.
-- Testes offline com mocks em tests/test_chatgpt_plan.py.
+## Testes e build
 
-## Limites e validação pendente
+No Windows com as dependências instaladas, execute test_hybrid.ps1. O script verifica os testes mockados de OAuth, streaming, memória, reconhecimento local, imagens e Git, sem usar uma conta real.
 
-Não há sincronização de conversas, histórico, memórias, voz nativa ou comandos entre a sessão oficial do ChatGPT e o Altair. O companheiro é visual e não lê a sessão do navegador. Para conversar dentro do Altair é usado o provedor de plano; o reconhecimento de fala existente ainda depende de serviço remoto. Piper pode gerar fala local quando configurado. O reconhecimento de voz offline, integração de ferramentas externas com a sessão ChatGPT, avatar avançado, múltiplas contas, bloqueio de múltiplos processos para rotação de token e instalador atualizado ainda não estão implementados.
+Para gerar o EXE execute build_hybrid_installer.ps1 em uma cópia limpa do repositório. Ele regenera o bundle de dependências e chama o empacotador original. Saída prevista: dist/AltairInstaller.exe. O download inicial do modelo de voz não está incluído no EXE; setup_voice.ps1 prepara o modelo. O método recomendado para esta primeira validação é instalar_hybrid.cmd seguido de iniciar_hybrid.cmd.
 
-O uso do plano está sujeito à elegibilidade, autorização, limites e configuração de créditos da conta. Não é possível garantir ausência de cobranças se o usuário permitir créditos pagos. Nenhuma compra de créditos é realizada pelo código. Não há verificação programática do estado da cobrança.
+## Limites e validações pendentes
 
-Os testes foram adicionados, mas não executados no ambiente de desenvolvimento remoto. Antes de mesclar, executar testes, verificar instalação/Qt/DPAPI no Windows, login real, autorização negada, revogação, expiração, limite de uso, privacidade e áudio WASAPI. O bundle offline do instalador ainda precisa incluir as novas dependências. Verificar licença do projeto original antes de redistribuir.
+Esta branch experimental ainda não passou por execução de testes, instalação, compilação do EXE ou autenticação em Windows real; o ambiente remoto não consegue resolver github.com por DNS. O login e o catálogo dependem de disponibilidade do serviço e do modelo; não anunciar integração homologada antes de testar. Verificar também DPAPI, refresh, revogação, erros de limite, voz, áudio WASAPI, permissões e atalhos Codex.
 
-```powershell
-$env:PYTHONPATH = "$PWD\src"
-.\.venv\Scripts\python.exe -m pip install pytest
-.\.venv\Scripts\python.exe -m pytest tests/test_chatgpt_plan.py -q
-```
+A sessão oficial do ChatGPT não disponibiliza automaticamente seu histórico, memória, voz nativa ou comandos ao Altair. A janela complementar não lê o navegador nem sincroniza chats. O avatar é vetorial 2D estilizado, não um rosto 3D realista. A análise visual é sob demanda, não monitoramento contínuo. O controle operacional depende das automações existentes do Altair e do Codex instalado. Não existe ponte automática para a sessão oficial de voz controlar Windows via Altair. Não há controle irrestrito de mouse/teclado, execução automática de shell por texto retornado pelo modelo ou multi-conta completa; não confundir essas limitações com recursos implementados.
 
-Documentação oficial:
+Confira a licença original antes de redistribuir.
+
+Referências oficiais:
 - https://developers.openai.com/siwc/token-sharing-open-source
 - https://developers.openai.com/siwc/token-sharing-open-source/sign-in
 - https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
