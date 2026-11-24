@@ -547,6 +547,7 @@ def iniciar_audio() -> bool:
         on_audio_error=lambda message: ui.adicionar_mensagem(message, "ia", animar=False),
         on_live_event=ui.live_event,
         live_answer=live_answer,
+        headset_mode=lambda: ui._live_headset_enabled,
     ))
 
 
