@@ -70,7 +70,7 @@ def test_only_official_stream_endpoint(tmp_path):
     session.save({"client_id": "a", "subject": "one", "access_token": "test",
                   "expires_at": time.time() + 600, "scopes": [PERMISSION]})
     llm = ChatGPTPlanLLM("model", session=session)
-    response = Mock(ok=True)
+    response = Mock(ok=True, status_code=200)
     response.__enter__ = Mock(return_value=response)
     response.__exit__ = Mock(return_value=False)
     response.iter_lines.return_value = events({"type": "response.output_text.delta", "delta": "OK"},
@@ -88,3 +88,21 @@ def test_only_official_stream_endpoint(tmp_path):
         assert params["json"]["instructions"] == "rules"
         assert "temperature" not in params["json"]
         assert params["headers"]["Authorization"] == "Bearer test"
+
+
+def test_plan_limit_stops_further_inference(tmp_path):
+    session = ChatGPTSession(tmp_path)
+    session.save({"client_id": "a", "subject": "one", "access_token": "test",
+                  "expires_at": time.time() + 600, "scopes": [PERMISSION]})
+    llm = ChatGPTPlanLLM("model", session=session)
+    response = Mock(status_code=429)
+    response.json.return_value = {"error": {"code": "subscription_sharing_usage_limit_exceeded"}}
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=False)
+    with patch("altair.core.chatgpt_plan.require_external_services_allowed"), patch(
+        "altair.core.chatgpt_plan.requests.post", return_value=response
+    ) as post:
+        for _ in range(2):
+            with pytest.raises(PlanError, match="Limite"):
+                llm._request_response({"model": "model"})
+        assert post.call_count == 1
