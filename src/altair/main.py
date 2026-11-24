@@ -525,6 +525,13 @@ def detectar_wake_word(texto: str) -> bool:
 
 
 def iniciar_audio() -> bool:
+    from altair.core.live_conversation import answer_turn
+
+    def live_answer(text, history, speak, progress, cancelled):
+        with api_lock:
+            return answer_turn(ia.llm, text, history, speak, progress, cancelled,
+                               lambda command: processar_comando_altair(command, falar=False))
+
     return bool(iniciar_loop_audio(
         ui,
         ia,
@@ -538,6 +545,8 @@ def iniciar_audio() -> bool:
         process_command=processar_comando_ui,
         should_speak=lambda: ui._voice_response_enabled,
         on_audio_error=lambda message: ui.adicionar_mensagem(message, "ia", animar=False),
+        on_live_event=ui.live_event,
+        live_answer=live_answer,
     ))
 
 
