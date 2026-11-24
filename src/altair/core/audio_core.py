@@ -1,4 +1,5 @@
-﻿import io
+﻿from collections import deque
+import io
 import os
 import threading
 import time
@@ -19,6 +20,8 @@ PROJECT_ROOT = os.path.abspath(os.path.join(BASE_DIR, "..", "..", ".."))
 def configurar_stt_remoto(config: dict) -> None:
     """Aplica ao processo a configuracao STT carregada pela aplicacao."""
     os.environ["ALTAIR_STT_MODE"] = config.get("stt_mode", "remote")
+    for key, env, default in [("whisper_model","ALTAIR_WHISPER_MODEL","base"), ("whisper_device","ALTAIR_WHISPER_DEVICE","cpu"), ("whisper_terms","ALTAIR_WHISPER_TERMS","Altair, ChatGPT, GitHub, Lovable, Codex"), ("mic_threshold","ALTAIR_MIC_THRESHOLD","0.003"), ("mic_pause","ALTAIR_MIC_PAUSE","1.8")]:
+        os.environ[env] = str(config.get(key, default))
     valores = {
         "ALTAIR_STT_REMOTE_URL": config.get(
             "stt_remote_url", "https://api.elevenlabs.io/v1/speech-to-text"
@@ -237,16 +240,18 @@ def _ouvir_microfone_impl(on_listen_level=None):
         return ""
 
     samplerate = 16000
-    threshold = float(os.getenv("ALTAIR_MIC_THRESHOLD", "0.003"))
-    silence_limit = 1.5
-    max_duration = 10
+    threshold = max(0.0005, min(0.08, float(os.getenv("ALTAIR_MIC_THRESHOLD", "0.003"))))
+    silence_limit = max(0.8, min(4.0, float(os.getenv("ALTAIR_MIC_PAUSE", "1.8"))))
+    max_duration = 35
+    pre_roll = deque(maxlen=10)
+    noise_floor = 0.0
 
     audio_chunks = []
     silence_start = None
     speaking = False
 
     def callback(indata, frames, time_info, status):
-        nonlocal silence_start, speaking, audio_chunks
+        nonlocal silence_start, speaking, audio_chunks, noise_floor
 
         if _audio_stop_event.is_set():
             raise sd.CallbackStop()
@@ -260,8 +265,16 @@ def _ouvir_microfone_impl(on_listen_level=None):
             except Exception:
                 pass
 
-        if volume > threshold:
+        if not speaking:
+            if volume < threshold * 2:
+                noise_floor = noise_floor * 0.9 + volume * 0.1
+            if volume <= max(threshold, noise_floor * 2.5):
+                pre_roll.append(indata.copy())
+                return
+            audio_chunks.extend(pre_roll)
+            pre_roll.clear()
             speaking = True
+        if volume > max(threshold, noise_floor * 2.5):
             silence_start = None
             audio_chunks.append(indata.copy())
 
@@ -278,12 +291,13 @@ def _ouvir_microfone_impl(on_listen_level=None):
             samplerate=samplerate,
             channels=1,
             dtype="float32",
+            blocksize=640,
             callback=callback,
         ) as stream:
             inicio = time.time()
             while not _audio_stop_event.is_set() and stream.active:
                 time.sleep(0.1)
-                if time.time() - inicio > max_duration:
+                if time.time() - inicio > max_duration or (not speaking and time.time() - inicio > 8):
                     break
     except Exception:
         # Propagate device failures to the supervisor; never spin silently.
@@ -307,7 +321,7 @@ def _ouvir_microfone_impl(on_listen_level=None):
 
 
 def ouvir_microfone(on_listen_level=None):
-    from altair.core.audio_isolation import DEVICE_LOCK, SPEECH_PENDING, run_worker
+    from altair.core.audio_isolation import DEVICE_LOCK, SPEECH_PENDING, CAPTURE_WORKER
     if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
         _audio_stop_event.wait(0.15)
         return ""
@@ -315,7 +329,7 @@ def ouvir_microfone(on_listen_level=None):
         if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
             return ""
         try:
-            return run_worker("capture", {}, cancel=lambda: _audio_stop_event.is_set() or SPEECH_PENDING.is_set(), timeout=120) or ""
+            return CAPTURE_WORKER.call("capture", {}, cancel=lambda: _audio_stop_event.is_set() or SPEECH_PENDING.is_set(), timeout=120) or ""
         finally:
             if on_listen_level:
                 on_listen_level(0.0)
