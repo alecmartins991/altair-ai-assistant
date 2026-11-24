@@ -28,8 +28,6 @@ class PiperVoice:
     ):
         self._stop_event = threading.Event()
 
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
 
         self.modelo = modelo_path
         self.piper_path = piper_path or str(ASSETS_DIR / "piper" / "piper.exe")
@@ -124,6 +122,8 @@ class PiperVoice:
             if self._stop_event.is_set():
                 return
 
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
             pygame.mixer.music.load(audio_para_tocar)
             pygame.mixer.music.play()
 
@@ -227,8 +227,6 @@ class ElevenLabsVoice:
         fallback_voice=None,
     ):
         self._stop_event = threading.Event()
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
 
         self.api_key = (api_key or "").strip()
         self.voice_id = (voice_id or "").strip()
@@ -297,6 +295,8 @@ class ElevenLabsVoice:
 
             if self._stop_event.is_set():
                 return
+            if not pygame.mixer.get_init():
+                pygame.mixer.init()
             pygame.mixer.music.load(nome_mp3)
             pygame.mixer.music.play()
             while pygame.mixer.music.get_busy() and not self._stop_event.is_set():
