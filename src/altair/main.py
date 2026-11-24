@@ -1252,7 +1252,7 @@ def abrir_interface_llm_config(parent: QWidget) -> None:
     def abrir_companheiro():
         companion = getattr(parent, "_chatgpt_companion", None)
         if companion is None or not companion.isVisible():
-            companion = ChatGPTCompanion(parent)
+            companion = ChatGPTCompanion(parent, get_llm=lambda: ia.llm)
             parent._chatgpt_companion = companion
         win.accept()
         companion.show()
