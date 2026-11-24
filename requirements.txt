@@ -22,4 +22,5 @@ pyvistaqt
 PyQt5
 # Dev tools - install with: pip install -r requirements-dev.txt
 langchain-core>=0.3.0
-
+PyJWT[crypto]>=2.10,<3
+SoundCard>=0.4.3,<1
