@@ -14,8 +14,13 @@ _model_path = None
 _model_lock = threading.Lock()
 
 
-def whisper_path():
-    return Path(os.getenv("ALTAIR_WHISPER_PATH", str(APP_DATA_ROOT / "models" / "whisper-base")))
+WHISPER_MODELS = {"base": "whisper-base", "small": "whisper-small", "large-v3-turbo": "whisper-large-v3-turbo"}
+_model_device = None
+
+
+def whisper_path(model=None):
+    model = model or os.getenv("ALTAIR_WHISPER_MODEL", "large-v3-turbo")
+    return Path(os.getenv("ALTAIR_WHISPER_PATH", str(APP_DATA_ROOT / "models" / WHISPER_MODELS.get(model, WHISPER_MODELS["large-v3-turbo"]))))
 
 
 def local_stt_ready():
@@ -23,17 +28,39 @@ def local_stt_ready():
 
 
 def transcribe_local(audio, language="pt"):
-    global _model, _model_path
+    global _model, _model_path, _model_device
     path = whisper_path()
     if not local_stt_ready():
-        raise RuntimeError("Modelo Whisper local ausente. Execute setup_voice.ps1 antes de usar o microfone.")
+        raise RuntimeError("Modelo Whisper selecionado ausente. Execute atualizar_voz.cmd.")
+    import numpy as np
+    from altair.core.audio_isolation import record
+    device = os.getenv("ALTAIR_WHISPER_DEVICE", "cpu")
+    if device not in ("cpu", "cuda"):
+        device = "cpu"
+    audio = np.asarray(audio, dtype=np.float32).flatten()
+    if audio.size < 3200:
+        return ""
+    # Remove DC offset and normalize quiet microphones without clipping.
+    audio = audio - np.mean(audio)
+    peak = float(np.max(np.abs(audio)))
+    if peak < 0.0005:
+        return ""
+    audio = np.clip(audio * min(5.0, 0.85 / peak), -1.0, 1.0)
     with _model_lock:
-        if _model is None or _model_path != path:
+        if _model is None or _model_path != path or _model_device != device:
             from faster_whisper import WhisperModel
-            _model = WhisperModel(str(path), device="cpu", compute_type="int8", local_files_only=True)
-            _model_path = path
-        segments, _ = _model.transcribe(audio, language=language or "pt", beam_size=1, vad_filter=True)
-        return " ".join(segment.text.strip() for segment in segments).strip()
+            _model = WhisperModel(str(path), device=device, compute_type="int8_float16" if device == "cuda" else "int8",
+                                  cpu_threads=min(6, os.cpu_count() or 4), local_files_only=True)
+            _model_path, _model_device = path, device
+        terms = os.getenv("ALTAIR_WHISPER_TERMS", "Altair, ChatGPT, GitHub, Lovable, Codex")[:300]
+        segments, _ = _model.transcribe(audio, language="pt" if language in ("pt", "pt-BR", "pt-br") else language,
+            task="transcribe", beam_size=5, vad_filter=True,
+            vad_parameters={"min_silence_duration_ms": 500, "speech_pad_ms": 350},
+            condition_on_previous_text=False, hotwords=terms or None,
+            no_speech_threshold=0.6, temperature=0.0)
+        result = " ".join(segment.text.strip() for segment in segments).strip()
+        record("whisper", "ok")
+        return result
 
 
 class WindowsLocalVoice:
