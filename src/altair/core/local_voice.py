@@ -63,6 +63,61 @@ def transcribe_local(audio, language="pt"):
         return result
 
 
+_live_model = None
+_live_name = None
+
+def warm_live_model():
+    global _live_model, _live_name
+    if _live_model is not None:
+        return _live_name
+    from faster_whisper import WhisperModel
+    import ctranslate2
+    chosen = os.getenv("ALTAIR_WHISPER_MODEL", "base")
+    device = os.getenv("ALTAIR_WHISPER_DEVICE", "cpu")
+    # A heavy decoder on CPU is usually the bottleneck. Prefer installed small/base.
+    candidates = []
+    if device == "cuda":
+        try:
+            if ctranslate2.get_cuda_device_count() > 0:
+                candidates.append((chosen, "cuda"))
+        except Exception:
+            pass
+    candidates.extend((name, "cpu") for name in ("small", "base", chosen))
+    for name, dev in dict.fromkeys(candidates):
+        path = whisper_path(name)
+        if not (path / "model.bin").is_file():
+            continue
+        try:
+            model = WhisperModel(str(path), device=dev, compute_type="int8_float16" if dev == "cuda" else "int8",
+                                 cpu_threads=min(6, os.cpu_count() or 4), local_files_only=True)
+            import numpy as np
+            segments, _ = model.transcribe(np.zeros(8000, dtype=np.float32), language="pt", beam_size=1, vad_filter=False)
+            list(segments)
+            _live_model, _live_name = model, name + " / " + dev.upper()
+            return _live_name
+        except Exception:
+            continue
+    raise RuntimeError("Nenhum modelo Whisper local utilizável")
+
+
+def live_transcribe(audio, final=False):
+    import numpy as np
+    warm_live_model()
+    audio = np.asarray(audio, dtype=np.float32).flatten()
+    if audio.size < 3200:
+        return ""
+    audio = audio - np.mean(audio)
+    peak = float(np.max(np.abs(audio)))
+    if peak < .0005:
+        return ""
+    audio = np.clip(audio * min(4., .8 / peak), -1., 1.)
+    segments, _ = _live_model.transcribe(audio, language="pt", task="transcribe",
+        beam_size=1, best_of=1, temperature=0., condition_on_previous_text=False,
+        vad_filter=False, no_speech_threshold=.65,
+        hotwords=os.getenv("ALTAIR_WHISPER_TERMS", "Altair, ChatGPT, GitHub, Lovable, Codex")[:300] or None)
+    return " ".join(s.text.strip() for s in segments if s.no_speech_prob < .8).strip()
+
+
 class WindowsLocalVoice:
     """Use installed Windows voices; text is passed via stdin, never as shell code."""
     def __init__(self, language="pt-BR"):
