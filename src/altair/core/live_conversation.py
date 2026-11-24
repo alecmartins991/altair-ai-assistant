@@ -3,6 +3,7 @@ import re
 import threading
 import queue
 import time
+from contextlib import nullcontext
 from altair.core.audio_isolation import record
 
 
@@ -27,12 +28,12 @@ class SpeechBuffer:
         self.pending += delta
         while True:
             match = re.search(r"[.!?;:](?:\s+|$)", self.pending)
-            if match and match.end() >= 20:
+            if match and self.pending[:match.end()].strip():
                 end = match.end()
-            elif len(self.pending) >= 150:
-                end = self.pending.rfind(" ", 30, 150)
+            elif len(self.pending) >= 110:
+                end = self.pending.rfind(" ", 30, 110)
                 if end < 0:
-                    end = 150
+                    end = 110
             else:
                 break
             part = self.pending[:end].strip()
@@ -59,10 +60,13 @@ class SpeechBuffer:
         self.thread.join()
 
 
-def answer_turn(llm, text, history, speak, progress, cancelled, command):
+def answer_turn(llm, text, history, speak, progress, cancelled, command, request_lock=None):
     """One ordinary conversation request, using the approved text account."""
     if explicit_command(text) or not callable(getattr(llm, "live_answer", None)):
-        result = command(text)
+        with request_lock if request_lock else nullcontext():
+            if cancelled():
+                return "", False
+            result = command(text)
         if isinstance(result, dict):
             visual, spoken = str(result.get("visual") or ""), str(result.get("fala") or "")
         else:
@@ -84,7 +88,11 @@ def answer_turn(llm, text, history, speak, progress, cancelled, command):
         speech.push(delta)
 
     try:
-        answer = llm.live_answer(text, history, on_delta, cancelled)
+        with request_lock if request_lock else nullcontext():
+            if cancelled():
+                speech.finish(flush=False)
+                return "", True
+            answer = llm.live_answer(text, history, on_delta, cancelled)
     except Exception:
         speech.finish(flush=False)
         raise
