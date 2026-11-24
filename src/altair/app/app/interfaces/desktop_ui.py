@@ -1829,7 +1829,7 @@ class DesktopUI(QMainWindow):
     def _start_audio_loop_background(self) -> None:
         # Start silencioso (usado para escuta continua ao iniciar / menu),
         # sem ligar o estado "ouvindo" visual.
-        if not external_services_allowed():
+        if os.getenv("ALTAIR_STT_MODE", "remote") != "local" and not external_services_allowed():
             self._ptt_active = False
             self._hud_mic_active = False
             self._atualizar_ui_microfone()
