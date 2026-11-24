@@ -528,9 +528,8 @@ def iniciar_audio() -> bool:
     from altair.core.live_conversation import answer_turn
 
     def live_answer(text, history, speak, progress, cancelled):
-        with api_lock:
-            return answer_turn(ia.llm, text, history, speak, progress, cancelled,
-                               lambda command: processar_comando_altair(command, falar=False))
+        return answer_turn(ia.llm, text, history, speak, progress, cancelled,
+                           lambda command: processar_comando_altair(command, falar=False), request_lock=api_lock)
 
     return bool(iniciar_loop_audio(
         ui,
