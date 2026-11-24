@@ -130,7 +130,7 @@ class ResidentWorker:
                 responses.put(None)
         threading.Thread(target=reader, daemon=True).start()
 
-    def call(self, action, payload, cancel=None, timeout=120):
+    def call(self, action, payload, cancel=None, timeout=120, on_event=None):
         if getattr(sys, "frozen", False):
             raise AudioFailure("Use a instalação Python do Altair Hybrid.")
         with self.lock:
@@ -157,6 +157,10 @@ class ResidentWorker:
                     if line is None:
                         raise AudioFailure("Processo de áudio encerrou inesperadamente.")
                     result = json.loads(line)
+                    if "event" in result:
+                        if on_event:
+                            on_event(result["event"], result.get("value"))
+                        continue
                     if result.get("ok") is not True:
                         raise AudioFailure("Falha no áudio (" + str(result.get("error", "AudioFailure")) + ").")
                     return result.get("value")
