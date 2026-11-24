@@ -479,7 +479,8 @@ class ChatGPTPlanLLM(GroqDualLLM):
                         timeout=(15, 120), stream=True, allow_redirects=False) as response:
                 _checked(response)
                 response.encoding = "utf-8"
-                return _parse_stream(response.iter_lines(chunk_size=64, decode_unicode=True), on_delta, cancelled)
+                lines = response.iter_lines(chunk_size=64, decode_unicode=True) if on_delta else response.iter_lines(decode_unicode=True)
+                return _parse_stream(lines, on_delta, cancelled)
         except PlanError as exc:
             if exc.code == "subscription_sharing_usage_limit_exceeded":
                 self._limit_paused = True
