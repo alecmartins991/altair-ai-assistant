@@ -32,7 +32,20 @@ _LOCK = threading.RLock()
 
 
 class PlanError(RuntimeError):
-    pass
+    def __init__(self, message, code=""):
+        super().__init__(message)
+        self.code = code
+
+
+def _response_error(code="", status=0):
+    messages = {
+        "subscription_sharing_usage_limit_exceeded": "Limite do ChatGPT atingido. Confira https://chatgpt.com/settings/usage antes de retomar.",
+        "subscription_sharing_usage_unavailable": "Não foi possível verificar a franquia. Tente novamente mais tarde.",
+        "subscription_sharing_user_not_eligible": "Sua conta ou workspace não permite o uso do plano neste aplicativo.",
+        "subscription_sharing_unsupported_capability": "O modelo ou recurso solicitado não é compatível com esta integração.",
+        "invalid_grant": "Sessão expirada ou revogada. Entre novamente com ChatGPT.",
+    }
+    return PlanError(messages.get(code, "ChatGPT recusou a operação" + (" (HTTP %s)" % status if status else "") + ". Verifique autorização e limites."), code)
 
 
 def _atomic(path, value):
@@ -50,9 +63,14 @@ def _atomic(path, value):
 
 
 def _checked(response):
-    if not response.ok:
-        # Do not leak tokens or the content of the request in diagnostic output.
-        raise PlanError("ChatGPT recusou a operação (HTTP %s). Verifique a conta e os limites." % response.status_code)
+    if not 200 <= response.status_code < 300:
+        try:
+            body = response.json()
+            err = body.get("error", {})
+            code = err.get("code", "") if isinstance(err, dict) else str(err)
+        except Exception:
+            code = ""
+        raise _response_error(code, response.status_code)
     return response
 
 
@@ -87,7 +105,9 @@ def _parse_stream(lines):
         if kind == "response.output_text.delta":
             chunks.append(event.get("delta", ""))
         elif kind in {"response.failed", "response.incomplete", "error"}:
-            raise PlanError("Resposta não concluída. Confira os limites em chatgpt.com/settings/usage.")
+            err = (event.get("response") or {}).get("error") or event.get("error") or {}
+            code = err.get("code", "") if isinstance(err, dict) else ""
+            raise _response_error(code or event.get("code", ""))
         elif kind == "response.completed":
             complete = True
             break
@@ -223,8 +243,15 @@ class ChatGPTSession:
             if record["expires_at"] < time.time() + 90:
                 if not record.get("refresh_token"):
                     raise PlanError("Sessão expirada. Entre novamente.")
-                tokens = _post_token(dict(grant_type="refresh_token", client_id=record["client_id"],
-                                          refresh_token=record["refresh_token"], resource=RESOURCE))
+                try:
+                    tokens = _post_token(dict(grant_type="refresh_token", client_id=record["client_id"],
+                                              refresh_token=record["refresh_token"], resource=RESOURCE))
+                except PlanError as exc:
+                    if exc.code in {"invalid_grant", "invalid_refresh_token", "token_expired",
+                                    "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"}:
+                        self.save({k: record[k] for k in ("client_id", "subject", "email") if k in record})
+                        raise PlanError("Sessão expirada ou revogada. Entre novamente com ChatGPT.", exc.code)
+                    raise
                 # Refresh identity is not used to switch accounts.
                 tokens.pop("id_token", None)
                 record = self._record(tokens, record)
@@ -291,6 +318,7 @@ class ChatGPTPlanLLM(GroqDualLLM):
                          router_model=model_router or model_main, require_api_key=False)
         self.api_key = ""
         self.session = session or ChatGPTSession()
+        self._limit_paused = False
 
     def _load_api_key(self):
         return ""
@@ -336,11 +364,19 @@ class ChatGPTPlanLLM(GroqDualLLM):
         return self._request_response(payload)
 
     def _request_response(self, payload):
-        with _checked(requests.post(RESOURCE + "/responses", json=payload,
-                    headers={"Authorization": "Bearer " + self.session.access_token()},
-                    timeout=(15, 120), stream=True, allow_redirects=False)) as response:
-            response.encoding = "utf-8"
-            return _parse_stream(response.iter_lines(decode_unicode=True))
+        if self._limit_paused:
+            raise _response_error("subscription_sharing_usage_limit_exceeded")
+        try:
+            with requests.post(RESOURCE + "/responses", json=payload,
+                        headers={"Authorization": "Bearer " + self.session.access_token()},
+                        timeout=(15, 120), stream=True, allow_redirects=False) as response:
+                _checked(response)
+                response.encoding = "utf-8"
+                return _parse_stream(response.iter_lines(decode_unicode=True))
+        except PlanError as exc:
+            if exc.code == "subscription_sharing_usage_limit_exceeded":
+                self._limit_paused = True
+            raise
 
     def _chat(self, *, model, messages, temperature=0.2, max_tokens=500, json_mode=False):
         instructions = "\n".join(m["content"] for m in messages if m["role"] in {"system", "developer"})
