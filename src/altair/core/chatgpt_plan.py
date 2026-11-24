@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import tempfile
 import threading
@@ -62,6 +63,33 @@ def _atomic(path, value):
             os.unlink(tmp)
 
 
+def safe_error(exc):
+    """Display only known messages or a safe exception category; never raw tokens/URLs."""
+    if isinstance(exc, PlanError):
+        return str(exc)
+    if isinstance(exc, PermissionError):
+        return "Acesso não permitido. Confira Menu > Privacidade e dados e as permissões do Windows."
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "Falha de certificado HTTPS. Confira data/hora do Windows e certificados. Não desative TLS."
+    if isinstance(exc, requests.exceptions.Timeout):
+        return "Tempo limite de conexão com a OpenAI."
+    if isinstance(exc, requests.exceptions.ConnectionError):
+        return "Falha de conexão com a OpenAI. Confira rede, DNS e proxy."
+    if isinstance(exc, ImportError):
+        return "Dependência ausente. Execute reparar_login.cmd."
+    if isinstance(exc, OSError):
+        return "Falha de acesso ao armazenamento ou recurso local do Windows."
+    return "Falha inesperada (" + type(exc).__name__ + ")."
+
+
+def _stage(label, fn):
+    try:
+        return fn()
+    except Exception as exc:
+        raise PlanError(label + ": " + safe_error(exc),
+                        exc.code if isinstance(exc, PlanError) else "") from None
+
+
 def _checked(response):
     if not 200 <= response.status_code < 300:
         try:
@@ -70,7 +98,11 @@ def _checked(response):
             code = err.get("code", "") if isinstance(err, dict) else str(err)
         except Exception:
             code = ""
-        raise _response_error(code, response.status_code)
+        code = code if isinstance(code, str) and re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]{0,80}", code) else ""
+        error = _response_error(code, response.status_code)
+        if code:
+            error = PlanError(str(error) + " [" + code + "]", code)
+        raise error
     return response
 
 
@@ -81,13 +113,38 @@ def _post_token(data):
 
 def _validate_identity(token, client, nonce):
     import jwt
-    jwks = jwt.PyJWKClient(AUTH + "/.well-known/jwks.json", timeout=15)
-    key = jwks.get_signing_key_from_jwt(token)
-    claims = jwt.decode(token, key.key, algorithms=["RS256"], audience=client,
-                        issuer=AUTH, options={"require": ["sub", "exp", "iat", "nonce"]},
-                        leeway=5)
-    if not secrets.compare_digest(str(claims["nonce"]), nonce) or not claims["sub"]:
-        raise PlanError("Não foi possível validar a identidade ChatGPT.")
+    if not isinstance(token, str) or not token:
+        raise PlanError("ID token não recebido.")
+    # Use the same requests TLS stack as code exchange, including its CA bundle.
+    # Only the official JWKS URL is allowed; never trust a URL from the token.
+    header = jwt.get_unverified_header(token)
+    if header.get("alg") != "RS256" or not isinstance(header.get("kid"), str):
+        raise PlanError("Algoritmo ou identificador de assinatura inválido.")
+    data = _stage("Consulta das chaves públicas OpenAI", lambda: _checked(
+        requests.get(AUTH + "/.well-known/jwks.json", timeout=20,
+                     allow_redirects=False, headers={"Accept": "application/json"})).json())
+    keys = [k for k in data.get("keys", []) if isinstance(k, dict)
+            and k.get("kid") == header["kid"] and k.get("kty") == "RSA"
+            and k.get("use", "sig") == "sig" and k.get("alg", "RS256") == "RS256"]
+    if len(keys) != 1:
+        raise PlanError("Chave pública de assinatura não encontrada. Tente um novo login.")
+    try:
+        key = jwt.PyJWK.from_dict(keys[0], algorithm="RS256")
+        claims = jwt.decode(token, key.key, algorithms=["RS256"], audience=client,
+                            issuer=AUTH, options={"require": ["iss", "aud", "sub", "exp", "iat", "nonce"]},
+                            leeway=5)
+    except jwt.ExpiredSignatureError:
+        raise PlanError("Identidade expirada. Confira o relógio do Windows e entre novamente.") from None
+    except jwt.InvalidAudienceError:
+        raise PlanError("Identidade emitida para outro cliente OAuth.") from None
+    except jwt.InvalidIssuerError:
+        raise PlanError("Emissor da identidade não corresponde à OpenAI.") from None
+    except jwt.InvalidTokenError as exc:
+        raise PlanError("Identidade rejeitada (" + type(exc).__name__ + ").") from None
+    if not isinstance(claims["nonce"], str) or not secrets.compare_digest(claims["nonce"], nonce):
+        raise PlanError("Nonce da identidade não corresponde à tentativa de login.")
+    if not isinstance(claims["sub"], str) or not claims["sub"]:
+        raise PlanError("Identidade sem identificador de conta.")
     return claims
 
 
@@ -132,10 +189,12 @@ class ChatGPTSession:
             return {}
 
     def save(self, record):
-        raw = protect_secret(json.dumps(record, ensure_ascii=False))
+        raw = _stage("Proteção DPAPI da sessão", lambda: protect_secret(json.dumps(record, ensure_ascii=False)))
         if os.name == "nt" and not raw.startswith("dpapi:"):
             raise PlanError("Não foi possível proteger as credenciais.")
-        _atomic(self.file, raw)
+        _stage("Gravação da sessão local", lambda: _atomic(self.file, raw))
+        if self.load() != record:
+            raise PlanError("Não foi possível reler a sessão protegida no perfil do Windows.")
 
     def host_id(self):
         path = self.root / "host-id"
@@ -147,6 +206,14 @@ class ChatGPTSession:
 
     def sign_in(self):
         require_external_services_allowed("ChatGPT")
+        # Verify cryptographic dependencies before sending the user to the browser.
+        try:
+            import jwt
+            from cryptography.hazmat.primitives.asymmetric import rsa
+            if not hasattr(jwt, "PyJWK"):
+                raise ImportError("PyJWT")
+        except ImportError:
+            raise PlanError("Biblioteca PyJWT/cryptography ausente ou incompatível. Execute reparar_login.cmd.") from None
         with _LOCK:
             old = self.load()
             client = old.get("client_id") or "dynamic_agent_client"
@@ -172,10 +239,10 @@ class ChatGPTSession:
                         return
                     callback.update({k: v[0] for k, v in query.items()})
                     self.send_response(200)
-                    self.send_header("Content-Type", "text/plain; charset=utf-8")
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
                     self.send_header("Cache-Control", "no-store")
                     self.end_headers()
-                    self.wfile.write("Retorne ao Altair para concluir a conexão.".encode())
+                    self.wfile.write(b"<!doctype html><meta charset=utf-8><title>Altair</title><script>history.replaceState(null,'','/auth/callback')</script><p>Retorne ao Altair para concluir a conexao. Pode fechar esta aba.</p>")
 
             with HTTPServer(("127.0.0.1", 0), Handler) as server:
                 server.timeout = 0.5
@@ -201,15 +268,19 @@ class ChatGPTSession:
                 client != "dynamic_agent_client" and issued != client
             ):
                 raise PlanError("Registro do cliente inválido.")
-            tokens = _post_token(dict(grant_type="authorization_code", client_id=issued,
-                                      code=callback["code"], code_verifier=verifier,
-                                      redirect_uri=redirect, resource=RESOURCE))
-            identity = _validate_identity(tokens["id_token"], issued, nonce)
+            tokens = _stage("2/4 Troca do código por credenciais", lambda: _post_token(
+                dict(grant_type="authorization_code", client_id=issued,
+                     code=callback["code"], code_verifier=verifier,
+                     redirect_uri=redirect, resource=RESOURCE)))
+            if not isinstance(tokens, dict):
+                raise PlanError("2/4 Resposta de autenticação inválida.")
+            identity = _stage("3/4 Validação da identidade", lambda: _validate_identity(tokens.get("id_token"), issued, nonce))
             if old.get("subject") and old["subject"] != identity["sub"]:
                 raise PlanError("Conta diferente da registrada. Esta versão utiliza um único registro local.")
-            record = self._record(tokens, dict(client_id=issued, subject=identity["sub"],
-                                              email=identity.get("email", "")))
-            self.save(record)
+            record = _stage("4/4 Preparação da sessão", lambda: self._record(tokens,
+                            dict(client_id=issued, subject=identity["sub"],
+                                 email=identity.get("email", ""))))
+            _stage("4/4 Armazenamento da sessão", lambda: self.save(record))
             return record.get("email", "")
 
     @staticmethod
@@ -304,11 +375,14 @@ class ChatGPTSession:
         _atomic(self._memory_path(), raw)
 
     def models(self):
-        data = _checked(requests.get(RESOURCE + "/models",
+        data = _stage("Catálogo de modelos", lambda: _checked(requests.get(RESOURCE + "/models",
             headers={"Authorization": "Bearer " + self.access_token()},
-            timeout=30, allow_redirects=False)).json()
-        return [(m["slug"], m.get("display_name", m["slug"])) for m in data.get("models", [])
-                if m.get("visibility") == "list" and m.get("slug")]
+            timeout=30, allow_redirects=False)).json())
+        if not isinstance(data, dict) or not isinstance(data.get("models"), list):
+            raise PlanError("Catálogo incompatível com a autorização de plano ChatGPT. Reconecte a conta.")
+        return [(m["slug"], m.get("display_name") or m["slug"]) for m in data["models"]
+                if isinstance(m, dict) and m.get("visibility") == "list"
+                and isinstance(m.get("slug"), str) and m["slug"]]
 
 
 class ChatGPTPlanLLM(GroqDualLLM):
