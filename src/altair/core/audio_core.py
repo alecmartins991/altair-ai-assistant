@@ -200,6 +200,15 @@ _audio_loop_thread = None
 _audio_stop_event = threading.Event()
 _wake_enabled = True
 _manual_listen_mode = False
+_live_turn_cancel = threading.Event()
+_live_voice = None
+
+
+def interromper_resposta_live():
+    _live_turn_cancel.set()
+    voice = _live_voice
+    if voice is not None:
+        voice.stop()
 
 
 def set_wake_enabled(enabled: bool) -> None:
@@ -221,6 +230,7 @@ def set_manual_listen_mode(enabled: bool) -> None:
 def parar_loop_audio() -> bool:
     """Solicita parada do loop de audio (escuta continua)."""
     _audio_stop_event.set()
+    interromper_resposta_live()
     with _audio_loop_lock:
         th = _audio_loop_thread
     return bool(th and th.is_alive())
@@ -320,7 +330,7 @@ def _ouvir_microfone_impl(on_listen_level=None):
     return texto
 
 
-def ouvir_microfone(on_listen_level=None):
+def ouvir_microfone(on_listen_level=None, on_event=None, live=False):
     from altair.core.audio_isolation import DEVICE_LOCK, SPEECH_PENDING, CAPTURE_WORKER
     if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
         _audio_stop_event.wait(0.15)
@@ -329,7 +339,7 @@ def ouvir_microfone(on_listen_level=None):
         if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
             return ""
         try:
-            return CAPTURE_WORKER.call("capture", {}, cancel=lambda: _audio_stop_event.is_set() or SPEECH_PENDING.is_set(), timeout=120) or ""
+            return CAPTURE_WORKER.call("live_capture" if live and os.getenv("ALTAIR_STT_MODE") == "local" else "capture", {}, cancel=lambda: _audio_stop_event.is_set() or SPEECH_PENDING.is_set(), timeout=120, on_event=on_event) or ""
         finally:
             if on_listen_level:
                 on_listen_level(0.0)
@@ -394,8 +404,10 @@ def iniciar_loop_audio(
     process_command=None,
     should_speak=None,
     on_audio_error=None,
+    on_live_event=None,
+    live_answer=None,
 ):
-    global _audio_loop_thread
+    global _audio_loop_thread, _live_voice
 
     with _audio_loop_lock:
         if _audio_loop_thread is not None and _audio_loop_thread.is_alive():
@@ -410,6 +422,7 @@ def iniciar_loop_audio(
 
     from altair.core.audio_isolation import record
     escutando = True
+    _live_voice = voz
 
     def loop():
         global _audio_loop_thread
@@ -420,9 +433,19 @@ def iniciar_loop_audio(
             ativo = False
             ultimo_comando = 0
             tempo_timeout = 30
+            history = []
+            failures = 0
+
+            def event(kind, value):
+                if _audio_stop_event.is_set():
+                    return
+                if kind == "level" and on_listen_level:
+                    on_listen_level(value)
+                elif on_live_event:
+                    on_live_event(kind, value)
 
             def falar_altair(texto: str) -> None:
-                if not texto or _audio_stop_event.is_set() or (should_speak and not should_speak()):
+                if not texto or _audio_stop_event.is_set() or _live_turn_cancel.is_set() or (should_speak and not should_speak()):
                     return
                 try:
                     if on_speak_start:
@@ -437,10 +460,26 @@ def iniciar_loop_audio(
                         on_speak_end()
 
             while escutando and (not _audio_stop_event.is_set()):
-                texto = ouvir_microfone(on_listen_level=on_listen_level)
+                live = _manual_listen_mode
+                _live_turn_cancel.clear()
+                if live:
+                    event("phase", "Ouvindo…")
+                try:
+                    texto = ouvir_microfone(on_listen_level=on_listen_level, on_event=event, live=live)
+                    failures = 0
+                except Exception as exc:
+                    failures += 1
+                    record("live-capture", type(exc).__name__)
+                    event("phase", "Reconectando microfone…")
+                    if failures >= 3:
+                        raise
+                    _audio_stop_event.wait(.5)
+                    continue
                 if _audio_stop_event.is_set():
                     break
                 if not texto:
+                    if live:
+                        event("partial", "")
                     continue
 
                 # Quando desabilitado pelo usuario, ignora tudo (inclusive wake word).
@@ -448,6 +487,24 @@ def iniciar_loop_audio(
                     ativo = False
                     continue
 
+                if live and live_answer:
+                    event("partial", "")
+                    adicionar_mensagem(texto, "usuario")
+                    event("phase", "Pensando…")
+                    try:
+                        visual, streamed = live_answer(texto, history, falar_altair,
+                            lambda text: event("answer", text),
+                            lambda: _audio_stop_event.is_set() or _live_turn_cancel.is_set())
+                        if visual and not _audio_stop_event.is_set() and not _live_turn_cancel.is_set():
+                            adicionar_mensagem(visual, "ia")
+                    except Exception as exc:
+                        record("live-answer", type(exc).__name__)
+                        if not _live_turn_cancel.is_set() and not _audio_stop_event.is_set():
+                            from altair.core.chatgpt_plan import safe_error
+                            adicionar_mensagem("Altair Live: " + safe_error(exc), "ia")
+                    finally:
+                        event("answer", "")
+                    continue
                 if _manual_listen_mode:
                     ativo = True
                 elif detectar_wake_word(texto):
@@ -497,6 +554,8 @@ def iniciar_loop_audio(
         finally:
             try:
                 atualizar_botao(False)
+                if on_live_event:
+                    on_live_event("closed", "")
             except Exception:
                 pass
             with _audio_loop_lock:
