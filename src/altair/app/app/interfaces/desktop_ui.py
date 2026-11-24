@@ -34,6 +34,7 @@ class _UiBridge(QObject):
     set_hud_state = pyqtSignal(str)
     set_hud_level = pyqtSignal(float)
     set_hud_responding = pyqtSignal(bool)
+    live_event = pyqtSignal(str, object)
 
 
 class HudWidget(QWidget):
@@ -173,6 +174,7 @@ class DesktopUI(QMainWindow):
         self._bridge.set_hud_state.connect(self._set_hud_state_impl, Qt.QueuedConnection)
         self._bridge.set_hud_level.connect(self._set_hud_audio_level_impl, Qt.QueuedConnection)
         self._bridge.set_hud_responding.connect(self._set_hud_responding_impl, Qt.QueuedConnection)
+        self._bridge.live_event.connect(self._live_event_impl, Qt.QueuedConnection)
         self._audio_starting = False
 
         self._typing_widget: Optional[QWidget] = None
@@ -646,6 +648,24 @@ class DesktopUI(QMainWindow):
         bottom_layout.setContentsMargins(13, 13, 13, 13)
         bottom_layout.setSpacing(10)
 
+        self.live_panel = QFrame(bottom)
+        self.live_panel.setStyleSheet("QFrame {background: #172b38; border-radius: 10px;} QLabel {background: transparent; color: #d7f4f0;}")
+        live_layout = QVBoxLayout(self.live_panel)
+        live_layout.setContentsMargins(12, 8, 12, 8)
+        self.live_phase = QLabel("Altair Live", self.live_panel)
+        self.live_phase.setStyleSheet("font-weight: 700; color: #9de7cd;")
+        self.live_caption = QLabel("", self.live_panel)
+        self.live_caption.setWordWrap(True)
+        self.live_caption.setTextFormat(Qt.PlainText)
+        self.live_reply = QLabel("", self.live_panel)
+        self.live_reply.setWordWrap(True)
+        self.live_reply.setTextFormat(Qt.PlainText)
+        live_layout.addWidget(self.live_phase)
+        live_layout.addWidget(self.live_caption)
+        live_layout.addWidget(self.live_reply)
+        bottom_layout.addWidget(self.live_panel)
+        self.live_panel.hide()
+
         self.entry = ComposerEdit(bottom)
         self.entry.send_requested.connect(self._enviar)
         self.entry.setMinimumWidth(0)
@@ -678,7 +698,7 @@ class DesktopUI(QMainWindow):
         self.btn_voz.setText("")
         self.btn_voz.setIcon(self._icon_pixmap("mic_record", 20))
         self.btn_voz.setFixedSize(40, 40)
-        self.btn_voz.setToolTip("Iniciar audio")
+        self.btn_voz.setToolTip("Iniciar ligação Altair Live")
         self.btn_voz.clicked.connect(self._iniciar_audio_seguro)
         self.btn_voz.setStyleSheet(
             "background: #d8d8d8; border: 1px solid #bdbdbd; border-radius: 12px;"
@@ -700,7 +720,7 @@ class DesktopUI(QMainWindow):
         options_row.addWidget(self.btn_falar)
         self.btn_interromper_fala = QToolButton(bottom)
         self.btn_interromper_fala.setObjectName("stopSpeechButton")
-        self.btn_interromper_fala.setText("Parar fala")
+        self.btn_interromper_fala.setText("Interromper")
         self.btn_interromper_fala.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
         self.btn_interromper_fala.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.btn_interromper_fala.setFixedHeight(32)
@@ -1770,7 +1790,7 @@ class DesktopUI(QMainWindow):
         self._hud_state = self._resolver_estado_hud()
         if hasattr(self, "btn_interromper_fala"):
             self.btn_interromper_fala.setEnabled(
-                self._hud_responding and self._stop_speech is not None
+                (self._hud_responding or self._ptt_active) and self._stop_speech is not None
             )
 
     def _falar_com_estado(self, texto: str) -> None:
@@ -1784,6 +1804,31 @@ class DesktopUI(QMainWindow):
         finally:
             self.set_hud_responding(False)
 
+    def live_event(self, kind, value):
+        self._bridge.live_event.emit(kind, value)
+
+    def _live_event_impl(self, kind, value):
+        if not hasattr(self, "live_panel"):
+            return
+        if kind == "closed":
+            self.live_panel.hide()
+            self.live_caption.clear()
+            self.live_reply.clear()
+            self._hud_audio_level_target = 0
+            return
+        if not self._ptt_active:
+            return
+        self.live_panel.show()
+        if kind == "phase":
+            self.live_phase.setText(str(value))
+            self.set_ia_status("Live: " + str(value))
+            self.set_hud_state("processing" if "Pensando" in str(value) or "Concluindo" in str(value) else "listening")
+            self.btn_interromper_fala.setEnabled(True)
+        elif kind == "partial":
+            self.live_caption.setText(("Você: " + str(value)[-400:]) if value else "")
+        elif kind == "answer":
+            self.live_reply.setText(("Altair: " + str(value)[-500:]) if value else "")
+
     def _iniciar_audio_seguro(self) -> None:
         if self._continuous_listen_enabled:
             self.set_ia_status("IA: Escuta contínua ativa; use o menu para desativá-la")
@@ -1793,6 +1838,7 @@ class DesktopUI(QMainWindow):
         # No modo manual, cada fala capturada e enviada diretamente ao assistente.
         if self._ptt_active:
             self._ptt_active = False
+            self.live_panel.hide()
             self._hud_mic_active = False
             self._hud_state = self._resolver_estado_hud()
             self._atualizar_ui_microfone()
@@ -1813,6 +1859,10 @@ class DesktopUI(QMainWindow):
 
         # Liga o "ouvindo" visual.
         self._ptt_active = True
+        self.live_panel.show()
+        self.live_phase.setText("Iniciando ligação…")
+        self.live_caption.clear()
+        self.live_reply.clear()
         self._hud_mic_active = True
         self._hud_state = self._resolver_estado_hud()
         self._atualizar_ui_microfone()
@@ -2585,6 +2635,7 @@ class DesktopUI(QMainWindow):
         if not self._continuous_listen_running:
             # Se o loop parou, derruba o "ouvindo" visual tambem.
             self._ptt_active = False
+            self.live_panel.hide()
             self._hud_mic_active = False
             self._audio_stop_pending = False
         self._hud_state = self._resolver_estado_hud()
@@ -2603,7 +2654,7 @@ class DesktopUI(QMainWindow):
             self.btn_voz.setStyleSheet(
                 "background: #f2a9b4; border: 1px solid #da7a88; border-radius: 12px;"
             )
-            self.btn_voz.setToolTip("Desativar audio")
+            self.btn_voz.setToolTip("Encerrar ligação Altair Live")
             self.mic_status_label.setText("Ativo")
             if hasattr(self, "mic_value_label"):
                 self.mic_value_label.setText("Escutando")
@@ -2872,7 +2923,11 @@ class DesktopUI(QMainWindow):
         if not self._stop_speech:
             return
         try:
-            self._stop_speech()
+            if self._ptt_active:
+                from audio_core import interromper_resposta_live
+                interromper_resposta_live()
+            else:
+                self._stop_speech()
         except Exception as exc:
             self.set_ia_status(f"Erro ao interromper fala: {exc}")
         finally:
