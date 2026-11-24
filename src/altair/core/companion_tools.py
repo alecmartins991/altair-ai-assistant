@@ -42,3 +42,22 @@ def git_summary(directory):
         "Últimos commits:\n" + run("log", "-5", "--format=%h %s"),
         "Resumo de alterações:\n" + run("diff", "--stat", "--no-ext-diff", "--no-textconv"),
     ])
+
+
+def launch_codex(directory):
+    """Launch an installed official Codex CLI in a user-selected directory.
+
+    No token sharing, arbitrary commands, or automatic GitHub writes.
+    """
+    root = Path(directory).resolve(strict=True)
+    if not root.is_dir():
+        raise ValueError("Selecione uma pasta válida.")
+    exe = shutil.which("codex.exe") if os.name == "nt" else shutil.which("codex")
+    if not exe:
+        raise RuntimeError("Codex CLI executável não encontrado. Instale o Codex oficial e entre com ChatGPT.")
+    env = os.environ.copy()
+    env.pop("OPENAI_API_KEY", None)
+    env.pop("CODEX_API_KEY", None)
+    flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    return subprocess.Popen([exe, "--sandbox", "workspace-write", "--ask-for-approval", "on-request"],
+                            cwd=str(root), env=env, creationflags=flags)
