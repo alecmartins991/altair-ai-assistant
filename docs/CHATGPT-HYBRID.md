@@ -6,8 +6,8 @@
 2. Instale Python 3.10 x64 se ainda não estiver instalado.
 3. Execute instalar_hybrid.cmd. Instala dependências e baixa o modelo Whisper base para uso offline posterior. Precisa de internet nesta etapa. Para omitir o download, execute install_hybrid.ps1 -SkipVoice.
 4. Execute iniciar_hybrid.cmd. O perfil de teste fica em %LOCALAPPDATA%\Altair-Hybrid; o Altair original fica separado.
-5. Em Menu > Privacidade e dados, autorize serviços externos se desejar usar ChatGPT.
-6. Em API e modelos, clique Continue with ChatGPT. Confira que o uso de créditos extras está desabilitado na conta em https://chatgpt.com/settings/usage e, depois do registro, confira também os controles do agente. Autorize no navegador, consulte e selecione um modelo da conta e aplique.
+5. Na primeira abertura o assistente oferece configuração guiada do ChatGPT. Autorize o envio de dados à OpenAI se desejar; a voz local não exige esta autorização.
+6. Em API e modelos, clique Continue with ChatGPT. Confira que o uso de créditos extras está desabilitado na conta em https://chatgpt.com/settings/usage e, depois do registro, confira também os controles do agente. Autorize no navegador, consulte e selecione um modelo da conta. Use Testar resposta do ChatGPT para uma solicitação curta opcional e depois aplique.
 7. Em Configurar Voz, selecione windows_local e reconhecimento local. Use o microfone do Altair e as vozes instaladas do Windows. Se necessário, adicione uma voz portuguesa nas configurações do Windows.
 8. Abra o companheiro visual do ChatGPT nas configurações de IA. Pode abrir o ChatGPT oficial em janela separada e usar o modo de voz oficial, ou enviar comandos ao Altair local. O avatar reage ao volume de todos os sons do PC somente se habilitado.
 
@@ -17,14 +17,14 @@ Não precisa gerar API Key da OpenAI. O uso está sujeito à elegibilidade, perm
 
 - OAuth oficial de registro dinâmico com loopback, PKCE, state, nonce e validação do ID token.
 - Sessão protegida localmente com DPAPI no Windows, renovação e tentativa de revogação ao desconectar. Um registro local de conta; não compartilhar tokens ou cookies.
-- Modelos da conta e inferência via Responses pública com SSE. Sem fallback automático para outro provedor pago.
+- Modelos da conta e inferência via Responses pública com SSE. Sem fallback automático para outro provedor pago. Erros de franquia pausam novas inferências nesta instância; depois de verificar a franquia, reabra a configuração e aplique o provedor novamente. Revogação de refresh token exige novo login.
 - Memória local opcional separada por registro; importação manual de resumo .txt/.md de até 12.000 caracteres, até seis pares de conversa, opção de apagar.
 - Whisper local, sem fallback remoto quando modo local selecionado; voz local System.Speech do Windows. O modelo é baixado uma única vez pelo setup_voice.ps1.
 - Avatar vetorial flutuante, olhos animados, boca por amplitude sonora, indicador de processamento, atalho para ChatGPT oficial, campo de comandos para o Altair e botão de parar fala.
 - Captura da tela principal com prévia e envio confirmado pelo usuário ao modelo compatível; não grava imagem em disco nem captura continuamente.
 - Diagnóstico de CPU, RAM e disco; inspeção local do Git somente leitura (status, log e diff --stat).
 - Atalho para abrir o executável oficial Codex CLI já instalado no PATH, na pasta selecionada, em sandbox workspace-write e aprovação on-request. Codex usa sua própria sessão; não usa os tokens do Altair. Não faz push automaticamente.
-- Instalador por script e launcher; receita de build do instalador EXE.
+- Instalador por script, configuração guiada no primeiro uso, launcher e receita de build do instalador EXE. O launcher Python impede duas instâncias do Altair no mesmo usuário Windows; feche o Altair antigo antes de testar.
 
 ## Testes e build
 
