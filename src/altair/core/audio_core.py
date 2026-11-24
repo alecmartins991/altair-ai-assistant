@@ -230,7 +230,7 @@ def _stt_enabled():
     return _remote_stt_enabled() and external_services_allowed()
 
 
-def ouvir_microfone(on_listen_level=None):
+def _ouvir_microfone_impl(on_listen_level=None):
     print("Aguardando fala...")
 
     if not _stt_enabled():
@@ -302,9 +302,22 @@ def ouvir_microfone(on_listen_level=None):
         texto = _transcrever_audio_remoto(audio_data)
     if _audio_stop_event.is_set():
         return ""
-    if texto:
-        print("TEXTO CAPTADO:", texto)
     return texto
+
+
+def ouvir_microfone(on_listen_level=None):
+    from altair.core.audio_isolation import DEVICE_LOCK, SPEECH_PENDING, run_worker
+    if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
+        _audio_stop_event.wait(0.15)
+        return ""
+    with DEVICE_LOCK:
+        if _audio_stop_event.is_set() or SPEECH_PENDING.is_set():
+            return ""
+        try:
+            return run_worker("capture", {}, cancel=lambda: _audio_stop_event.is_set() or SPEECH_PENDING.is_set(), timeout=120) or ""
+        finally:
+            if on_listen_level:
+                on_listen_level(0.0)
 
 
 # ==============================
@@ -363,6 +376,9 @@ def iniciar_loop_audio(
     on_speak_start=None,
     on_speak_end=None,
     on_listen_level=None,
+    process_command=None,
+    should_speak=None,
+    on_audio_error=None,
 ):
     global _audio_loop_thread
 
@@ -377,6 +393,7 @@ def iniciar_loop_audio(
         print("Configure a transcrição local ou autorize o provedor remoto para habilitar a entrada de voz.")
         return False
 
+    from altair.core.audio_isolation import record
     escutando = True
 
     def loop():
@@ -390,12 +407,16 @@ def iniciar_loop_audio(
             tempo_timeout = 30
 
             def falar_altair(texto: str) -> None:
-                if not texto:
+                if not texto or _audio_stop_event.is_set() or (should_speak and not should_speak()):
                     return
                 try:
                     if on_speak_start:
                         on_speak_start()
                     voz.speak(texto)
+                except Exception as exc:
+                    record("voice-loop-playback", type(exc).__name__)
+                    if on_audio_error:
+                        on_audio_error("Falha na reprodução de voz. A conversa continua por texto.")
                 finally:
                     if on_speak_end:
                         on_speak_end()
@@ -431,7 +452,14 @@ def iniciar_loop_audio(
                     ultimo_comando = agora
 
                     adicionar_mensagem(texto, "usuario")
-                    resposta = ia.perguntar(texto)
+                    record("voice-command", "start")
+                    try:
+                        resposta = process_command(texto) if process_command else ia.perguntar(texto)
+                        record("voice-command", "ok")
+                    except Exception as exc:
+                        record("voice-command", type(exc).__name__)
+                        adicionar_mensagem("Não foi possível processar a solicitação de voz.", "ia")
+                        continue
 
                     if isinstance(resposta, dict):
                         resposta_visual = str(resposta.get("visual", "")).strip()
@@ -444,9 +472,11 @@ def iniciar_loop_audio(
                         adicionar_mensagem(resposta_visual, "ia")
                     if resposta_fala:
                         falar_altair(resposta_fala)
+                    ultimo_comando = time.time()
         except Exception as exc:
-            print(f"ERRO no loop de audio: {exc}")
-            traceback.print_exc()
+            record("audio-loop", type(exc).__name__)
+            if on_audio_error:
+                on_audio_error("Escuta interrompida por falha de áudio. Veja audio-stability.log e tente novamente.")
         finally:
             try:
                 atualizar_botao(False)
