@@ -45,3 +45,7 @@ Referências oficiais:
 - https://developers.openai.com/siwc/token-sharing-open-source/sign-in
 - https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference
 - https://developers.openai.com/siwc/token-sharing-open-source/preview-limitations
+
+## Atualização de instalação existente: correção do login
+
+Feche o Altair. Baixe a branch atualizada, extraia em uma pasta temporária e copie a pasta src e o arquivo reparar_login.cmd para a raiz da instalação anterior (onde estão iniciar_hybrid.cmd e .venv), substituindo os arquivos quando solicitado. Execute reparar_login.cmd, que verifica dependências JWT, certificados, DPAPI e sintaxe sem solicitar sua chave ou conta. Abra iniciar_hybrid.cmd e refaça o login. A janela de configuração agora mostra as etapas de falha da autenticação e os controles de confirmação visíveis. Nunca copie códigos da URL de retorno, tokens ou senhas em mensagens de suporte. Os novos testes de regressão foram adicionados, mas ainda não executados em Windows real.
