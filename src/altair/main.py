@@ -10,7 +10,8 @@ import webbrowser
 from difflib import get_close_matches
 
 try:
-    faulthandler.enable(all_threads=True)
+    if not faulthandler.is_enabled():
+        faulthandler.enable(all_threads=True)
 except Exception:
     pass
 
@@ -1677,4 +1678,10 @@ else:
             pass
     threading.Thread(target=falar_boas_vindas, daemon=True).start()
 
+def shutdown_audio():
+    from audio_core import parar_loop_audio
+    parar_loop_audio()
+    voz.stop()
+
+ui._qt_app.aboutToQuit.connect(shutdown_audio)
 ui.run()
