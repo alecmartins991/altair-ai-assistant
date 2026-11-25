@@ -442,6 +442,7 @@ def iniciar_loop_audio(
             history = []
             failures = 0
             next_text = ""
+            playback_started = threading.Event()
 
             def event(kind, value):
                 if _audio_stop_event.is_set():
@@ -457,7 +458,12 @@ def iniciar_loop_audio(
                 try:
                     if on_speak_start:
                         on_speak_start()
-                    voz.speak(texto)
+                    playback_started.set()
+                    from altair.core.audio_isolation import IsolatedVoice
+                    if isinstance(voz, IsolatedVoice):
+                        voz.speak(texto, cancelled=lambda: _audio_stop_event.is_set() or _live_turn_cancel.is_set() or (should_speak and not should_speak()))
+                    else:
+                        voz.speak(texto)
                 except Exception as exc:
                     record("voice-loop-playback", type(exc).__name__)
                     if on_audio_error:
@@ -469,6 +475,7 @@ def iniciar_loop_audio(
             while escutando and (not _audio_stop_event.is_set()):
                 live = _manual_listen_mode
                 _live_turn_cancel.clear()
+                playback_started.clear()
                 if live:
                     event("phase", "Ouvindo…")
                 try:
@@ -507,11 +514,20 @@ def iniciar_loop_audio(
                     monitor_stop = threading.Event()
                     heard = threading.Event()
                     monitor_result = []
-                    if headset_mode and headset_mode() and os.getenv("ALTAIR_STT_MODE") == "local":
-                        from altair.core.audio_isolation import CAPTURE_WORKER
+                    if os.getenv("ALTAIR_STT_MODE") == "local":
+                        from contextlib import nullcontext
+                        from altair.core.audio_isolation import CAPTURE_WORKER, DEVICE_LOCK, SPEECH_PENDING
+                        duplex = bool(headset_mode and headset_mode())
+
+                        def monitor_cancelled():
+                            if _audio_stop_event.is_set() or (duplex and not headset_mode()):
+                                return True
+                            if heard.is_set():
+                                return False
+                            return monitor_stop.is_set() or (not duplex and (playback_started.is_set() or SPEECH_PENDING.is_set()))
 
                         def monitor_event(kind, value):
-                            if kind == "speech_start" and not monitor_stop.is_set():
+                            if kind == "speech_start" and not monitor_cancelled():
                                 heard.set()
                                 interromper_resposta_live()
                                 event("phase", "Ouvindo sua interrupção…")
@@ -520,19 +536,23 @@ def iniciar_loop_audio(
 
                         def monitor_input():
                             try:
-                                while not monitor_stop.is_set() and not _audio_stop_event.is_set() and headset_mode():
-                                    result = CAPTURE_WORKER.call("live_capture", {},
-                                        cancel=lambda: _audio_stop_event.is_set() or not headset_mode() or (monitor_stop.is_set() and not heard.is_set()),
-                                        timeout=120, on_event=monitor_event)
-                                    if result:
+                                while not monitor_cancelled():
+                                    # On speakers, listen during thinking only, then release the device
+                                    # before any playback. Headphones allow simultaneous capture.
+                                    with nullcontext() if duplex else DEVICE_LOCK:
+                                        if monitor_cancelled():
+                                            return
+                                        result = CAPTURE_WORKER.call("live_capture", {},
+                                            cancel=monitor_cancelled, timeout=120, on_event=monitor_event)
+                                    if result and heard.is_set():
                                         monitor_result.append(result)
                                         return
                                     if heard.is_set():
                                         return
                             except Exception as exc:
-                                record("live-headset", type(exc).__name__)
+                                record("live-monitor", type(exc).__name__)
 
-                        monitor = threading.Thread(target=monitor_input, daemon=True, name="altair-live-headset")
+                        monitor = threading.Thread(target=monitor_input, daemon=True, name="altair-live-monitor")
                         monitor.start()
                     try:
                         visual, streamed = live_answer(texto, history, falar_altair,
