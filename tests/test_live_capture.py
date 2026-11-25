@@ -36,7 +36,7 @@ def mock_audio(monkeypatch, levels, rate=16000):
                     if self.stop.is_set():
                         break
                     clock[0] += .02
-                    self.callback(np.full((self.blocksize, 1), level, dtype=np.float32),
+                    self.callback((level*np.sin(2*np.pi*200*np.arange(self.blocksize)/rate)).astype(np.float32).reshape(-1, 1),
                                   self.blocksize, None, None)
                     time.sleep(.001)
             self.thread = threading.Thread(target=run)
