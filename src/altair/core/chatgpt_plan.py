@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import os
+import queue
 import re
 import secrets
 import tempfile
@@ -444,7 +445,7 @@ class ChatGPTPlanLLM(GroqDualLLM):
         messages.append({"role": "user", "content": prompt})
         payload = dict(model=self.large_model, store=False, stream=True, input=messages,
             instructions="Você é Altair, em uma ligação por voz em português brasileiro. Converse naturalmente, sem frases prontas, com respostas diretas e curtas por padrão. Considere gírias e correções. Se a transcrição for ambígua, peça esclarecimento; não invente palavras ou ações. Não afirme ter executado ações. Evite markdown e listas longas na fala.")
-        answer = self._request_response(payload, on_delta, cancelled)
+        answer = self._live_request(payload, on_delta, cancelled)
         if cancelled():
             raise PlanError("Resposta interrompida.", "live_cancelled")
         if enabled:
@@ -470,13 +471,56 @@ class ChatGPTPlanLLM(GroqDualLLM):
                        ]}])
         return self._request_response(payload)
 
+    def _live_request(self, payload, on_delta, cancelled):
+        # Keep turn locks independent of blocking socket reads. The network
+        # thread owns its response and closes it on the next event or timeout.
+        events = queue.Queue(maxsize=256)
+        ended = threading.Event()
+
+        def send(kind, value):
+            while not ended.is_set() and not cancelled():
+                try:
+                    events.put((kind, value), timeout=.1)
+                    return
+                except queue.Full:
+                    continue
+
+        def network():
+            try:
+                answer = self._request_response(payload, lambda d: send("delta", d),
+                                                lambda: ended.is_set() or cancelled())
+                send("done", answer)
+            except Exception as exc:
+                send("error", exc)
+
+        threading.Thread(target=network, daemon=True, name="altair-live-network").start()
+        try:
+            while not cancelled():
+                try:
+                    kind, value = events.get(timeout=.1)
+                except queue.Empty:
+                    continue
+                if cancelled():
+                    break
+                if kind == "delta":
+                    on_delta(value)
+                elif kind == "done":
+                    return value
+                elif kind == "error":
+                    raise value
+            raise PlanError("Resposta interrompida.", "live_cancelled")
+        finally:
+            ended.set()
+
     def _request_response(self, payload, on_delta=None, cancelled=None):
         if self._limit_paused:
             raise _response_error("subscription_sharing_usage_limit_exceeded")
         try:
+            if cancelled and cancelled():
+                raise PlanError("Resposta interrompida.", "live_cancelled")
             with requests.post(RESOURCE + "/responses", json=payload,
                         headers={"Authorization": "Bearer " + self.session.access_token()},
-                        timeout=(15, 120), stream=True, allow_redirects=False) as response:
+                        timeout=(10, 25) if cancelled else (15, 120), stream=True, allow_redirects=False) as response:
                 _checked(response)
                 response.encoding = "utf-8"
                 lines = response.iter_lines(chunk_size=64, decode_unicode=True) if on_delta else response.iter_lines(decode_unicode=True)
