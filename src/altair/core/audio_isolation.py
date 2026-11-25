@@ -144,8 +144,17 @@ class ResidentWorker:
                 self.process.stdin.write((json.dumps({"action": action, "payload": payload}, ensure_ascii=True) + "\n").encode("ascii"))
                 self.process.stdin.flush()
                 deadline = time.monotonic() + timeout
+                cancel_deadline = None
                 while True:
                     if cancel and cancel():
+                        if action != "live_capture":
+                            self.close()
+                            return None
+                        if cancel_deadline is None:
+                            self.process.stdin.write(b'{"action":"cancel"}\n')
+                            self.process.stdin.flush()
+                            cancel_deadline = time.monotonic() + 1.0
+                    if cancel_deadline is not None and time.monotonic() >= cancel_deadline:
                         self.close()
                         return None
                     if time.monotonic() >= deadline:
@@ -158,9 +167,11 @@ class ResidentWorker:
                         raise AudioFailure("Processo de áudio encerrou inesperadamente.")
                     result = json.loads(line)
                     if "event" in result:
-                        if on_event:
+                        if on_event and cancel_deadline is None:
                             on_event(result["event"], result.get("value"))
                         continue
+                    if cancel_deadline is not None:
+                        return None
                     if result.get("ok") is not True:
                         raise AudioFailure("Falha no áudio (" + str(result.get("error", "AudioFailure")) + ").")
                     return result.get("value")
