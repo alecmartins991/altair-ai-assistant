@@ -655,6 +655,10 @@ class DesktopUI(QMainWindow):
         live_layout.setContentsMargins(12, 8, 12, 8)
         self.live_phase = QLabel("Altair Live", self.live_panel)
         self.live_phase.setStyleSheet("font-weight: 700; color: #9de7cd;")
+        self.live_device = QLabel("", self.live_panel)
+        self.live_device.setWordWrap(True)
+        self.live_device.setTextFormat(Qt.PlainText)
+        self.live_device.setStyleSheet("font-size: 9pt; color: #a8bfce;")
         self.live_caption = QLabel("", self.live_panel)
         self.live_caption.setWordWrap(True)
         self.live_caption.setTextFormat(Qt.PlainText)
@@ -662,6 +666,7 @@ class DesktopUI(QMainWindow):
         self.live_reply.setWordWrap(True)
         self.live_reply.setTextFormat(Qt.PlainText)
         live_layout.addWidget(self.live_phase)
+        live_layout.addWidget(self.live_device)
         live_layout.addWidget(self.live_caption)
         live_layout.addWidget(self.live_reply)
         self.live_headset = QCheckBox("Estou usando fones — permitir interromper falando", self.live_panel)
@@ -1819,6 +1824,7 @@ class DesktopUI(QMainWindow):
             self.btn_interromper_fala.setEnabled(False)
             self.live_panel.hide()
             self.live_headset.setChecked(False)
+            self.live_device.clear()
             self.live_caption.clear()
             self.live_reply.clear()
             self._hud_audio_level_target = 0
@@ -1831,6 +1837,8 @@ class DesktopUI(QMainWindow):
             self.set_ia_status("Live: " + str(value))
             self.set_hud_state("processing" if "Pensando" in str(value) or "Concluindo" in str(value) else "listening")
             self.btn_interromper_fala.setEnabled(True)
+        elif kind == "device":
+            self.live_device.setText("Microfone: " + str(value)[:160])
         elif kind == "partial":
             self.live_caption.setText(("Você: " + str(value)[-400:]) if value else "")
         elif kind == "answer":
@@ -1868,6 +1876,7 @@ class DesktopUI(QMainWindow):
         self._ptt_active = True
         self.live_panel.show()
         self.live_phase.setText("Iniciando ligação…")
+        self.live_device.clear()
         self.live_caption.clear()
         self.live_reply.clear()
         self._hud_mic_active = True
