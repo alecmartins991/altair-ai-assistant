@@ -11,13 +11,15 @@ RATE = 16000
 BLOCK = 320
 
 
-def live_capture(emit):
+def live_capture(emit, cancelled=lambda: False):
     import sounddevice as sd
     from altair.core.local_voice import live_transcribe, warm_live_model
     from altair.core.audio_isolation import record
     # Warm only once, before the microphone opens. Keep the model in this worker.
     emit("phase", "Preparando reconhecimento…")
     model = warm_live_model()
+    if cancelled():
+        return ""
     # Match the Windows default input format if 16 kHz is not supported.
     rate = RATE
     try:
@@ -64,6 +66,8 @@ def live_capture(emit):
     with ThreadPoolExecutor(max_workers=1) as executor:
         with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=input_block, callback=callback):
             while True:
+                if cancelled():
+                    return ""
                 collect()
                 if overflow.is_set():
                     raise RuntimeError("Microphone buffer overflow")
@@ -116,9 +120,13 @@ def live_capture(emit):
                 if now - last_voice >= pause or now - started >= 35:
                     break
         emit("level", 0.0)
+        if cancelled():
+            return ""
         emit("phase", "Concluindo transcrição…")
         if future is not None:
             last_partial = future.result().strip()
+        if cancelled():
+            return ""
         # Reuse a partial only if it includes all voiced frames plus a short tail.
         voiced_n = max(0, len(audio) - int((now - last_voice) * RATE / BLOCK))
         if last_partial and partial_n >= voiced_n + 10 and partial_n > 0:
@@ -126,4 +134,4 @@ def live_capture(emit):
         else:
             result = submit(executor, audio, True).result().strip()
         record("live-stt", "ms=" + str(int((time.monotonic()-now)*1000)))
-        return result
+        return "" if cancelled() else result
