@@ -195,25 +195,29 @@ class IsolatedVoice:
             from altair.core.local_voice import WindowsLocalVoice
             self._local = WindowsLocalVoice()
 
-    def speak(self, text):
+    def speak(self, text, cancelled=None):
         if not str(text).strip():
             return
+        def stopped():
+            return self._cancel.is_set() or (cancelled is not None and cancelled())
         with _speech_lock:
+            if cancelled is not None and cancelled():
+                return
             self._cancel.clear()
             SPEECH_PENDING.set()
             try:
                 with DEVICE_LOCK:
-                    if self._cancel.is_set():
+                    if stopped():
                         return
                     record("speech", "start")
                     if self._local:
                         self._local.speak(text)
                     elif self.config.get("provider") == "kokoro_local":
                         KOKORO_WORKER.call("speak", {"config": self.config, "text": str(text)},
-                                           cancel=self._cancel.is_set, timeout=180)
+                                           cancel=stopped, timeout=180)
                     else:
                         run_worker("speak", {"config": self.config, "text": str(text)},
-                                   cancel=self._cancel.is_set, timeout=180)
+                                   cancel=stopped, timeout=180)
                     record("speech", "ok")
             except Exception as exc:
                 record("speech", type(exc).__name__)
