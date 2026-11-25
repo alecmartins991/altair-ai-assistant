@@ -3,6 +3,8 @@ import contextlib
 import faulthandler
 import io
 import json
+import queue
+import threading
 import sys
 import time
 from pathlib import Path
@@ -10,10 +12,10 @@ from pathlib import Path
 from altair.core.audio_isolation import LOG_FILE, record
 
 
-def execute(action, payload, emit=lambda kind, value: None):
+def execute(action, payload, emit=lambda kind, value: None, cancelled=lambda: False):
     if action == "live_capture":
         from altair.core.live_capture import live_capture
-        return live_capture(emit)
+        return live_capture(emit, cancelled)
     if action == "capture":
         from altair.core.audio_core import _ouvir_microfone_impl
         return _ouvir_microfone_impl()
@@ -56,10 +58,10 @@ def execute(action, payload, emit=lambda kind, value: None):
     return None
 
 
-def _reply(action, payload, emit=lambda kind, value: None):
+def _reply(action, payload, emit=lambda kind, value: None, cancelled=lambda: False):
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            return {"ok": True, "value": execute(action, payload, emit)}
+            return {"ok": True, "value": execute(action, payload, emit, cancelled)}
     except Exception as exc:
         record("child", type(exc).__name__)
         return {"ok": False, "error": type(exc).__name__}
@@ -74,9 +76,27 @@ def main():
                 protocol_out = sys.stdout
                 def emit(kind, value):
                     print(json.dumps({"event": kind, "value": value}, ensure_ascii=True), file=protocol_out, flush=True)
-                for line in sys.stdin:
-                    req = json.loads(line)
-                    print(json.dumps(_reply(req["action"], req["payload"], emit), ensure_ascii=True), file=protocol_out, flush=True)
+                requests_queue = queue.Queue()
+                cancel_event = threading.Event()
+                def read_requests():
+                    try:
+                        for line in sys.stdin:
+                            req = json.loads(line)
+                            if req.get("action") == "cancel":
+                                cancel_event.set()
+                            else:
+                                cancel_event.clear()
+                                requests_queue.put(req)
+                    finally:
+                        cancel_event.set()
+                        requests_queue.put(None)
+                threading.Thread(target=read_requests, daemon=True).start()
+                while True:
+                    req = requests_queue.get()
+                    if req is None:
+                        break
+                    result = _reply(req["action"], req["payload"], emit, cancel_event.is_set)
+                    print(json.dumps(result, ensure_ascii=True), file=protocol_out, flush=True)
             else:
                 print(json.dumps(_reply(sys.argv[1], json.load(sys.stdin)), ensure_ascii=True), flush=True)
         finally:
