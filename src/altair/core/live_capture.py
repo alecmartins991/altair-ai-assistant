@@ -22,14 +22,20 @@ def live_capture(emit, cancelled=lambda: False):
     if cancelled():
         return ""
     # Match the Windows default input format if 16 kHz is not supported.
-    rate = RATE
+    rate, channels = RATE, 1
     try:
-        sd.check_input_settings(channels=1, dtype="float32", samplerate=rate)
+        sd.check_input_settings(channels=channels, dtype="float32", samplerate=rate)
     except Exception:
-        rate = int(sd.query_devices(kind="input")["default_samplerate"])
-        sd.check_input_settings(channels=1, dtype="float32", samplerate=rate)
+        info = sd.query_devices(kind="input")
+        rate = int(info["default_samplerate"])
+        try:
+            sd.check_input_settings(channels=channels, dtype="float32", samplerate=rate)
+        except Exception:
+            channels = min(2, int(info.get("max_input_channels", 1)))
+            sd.check_input_settings(channels=channels, dtype="float32", samplerate=rate)
     input_block = max(1, int(rate * BLOCK / RATE))
     emit("phase", "Ouvindo • " + model)
+    emit("device", str(sd.query_devices(kind="input").get("name", "Entrada padrão")))
     frames = queue.Queue(maxsize=500)
     overflow = threading.Event()
     pre = deque(maxlen=15)
@@ -51,7 +57,7 @@ def live_capture(emit, cancelled=lambda: False):
 
     def callback(indata, count, info, status):
         try:
-            frames.put_nowait((time.monotonic(), indata[:, 0].copy()))
+            frames.put_nowait((time.monotonic(), np.mean(indata, axis=1).astype(np.float32, copy=False)))
         except queue.Full:
             overflow.set()
 
@@ -67,7 +73,7 @@ def live_capture(emit, cancelled=lambda: False):
                 emit("partial", last_partial)
 
     with ThreadPoolExecutor(max_workers=1) as executor:
-        with sd.InputStream(samplerate=rate, channels=1, dtype="float32", blocksize=input_block, callback=callback):
+        with sd.InputStream(samplerate=rate, channels=channels, dtype="float32", blocksize=input_block, callback=callback):
             while True:
                 if cancelled():
                     return ""
