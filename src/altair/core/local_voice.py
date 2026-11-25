@@ -5,6 +5,7 @@ No network access during inference; the model is downloaded separately by the ow
 import os
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 from altair.paths import APP_DATA_ROOT
@@ -74,7 +75,8 @@ def warm_live_model():
     import ctranslate2
     chosen = os.getenv("ALTAIR_WHISPER_MODEL", "base")
     device = os.getenv("ALTAIR_WHISPER_DEVICE", "cpu")
-    # A heavy decoder on CPU is usually the bottleneck. Prefer installed small/base.
+    # Respect selected quality when real-time decoding is feasible. Measure the
+    # warm model on a synthetic sample; this measures speed, not speech accuracy.
     candidates = []
     if device == "cuda":
         try:
@@ -82,8 +84,10 @@ def warm_live_model():
                 candidates.append((chosen, "cuda"))
         except Exception:
             pass
-    candidates.extend((name, "cpu") for name in ("small", "base", chosen))
-    for name, dev in dict.fromkeys(candidates):
+    candidates.extend((name, "cpu") for name in (chosen, "small", "base", "large-v3-turbo"))
+    available = [(name, dev) for name, dev in dict.fromkeys(candidates) if (whisper_path(name) / "model.bin").is_file()]
+    from altair.core.audio_isolation import record
+    for index, (name, dev) in enumerate(available):
         path = whisper_path(name)
         if not (path / "model.bin").is_file():
             continue
@@ -93,9 +97,24 @@ def warm_live_model():
             import numpy as np
             segments, _ = model.transcribe(np.zeros(8000, dtype=np.float32), language="pt", beam_size=1, vad_filter=False)
             list(segments)
+            # Avoid silent quality downgrades: only fall back if selected
+            # decoder cannot keep up, and report the actual model in the UI.
+            sample = (.025 * np.sin(2 * np.pi * 220 * np.arange(16000) / 16000)).astype(np.float32)
+            start = time.monotonic()
+            segments, _ = model.transcribe(sample, language="pt", beam_size=1, vad_filter=False)
+            list(segments)
+            elapsed = time.monotonic() - start
+            record("live-model", name + "/" + dev + " benchmark_ms=" + str(int(elapsed * 1000)))
+            if elapsed > 1.2 and index + 1 < len(available):
+                # Only downgrade to a smaller model, not a slower GPU fallback.
+                smaller = {"large-v3-turbo": 3, "small": 2, "base": 1}
+                if any(smaller.get(n, 0) < smaller.get(name, 0) for n, _ in available[index+1:]):
+                    del model
+                    continue
             _live_model, _live_name = model, name + " / " + dev.upper()
             return _live_name
-        except Exception:
+        except Exception as exc:
+            record("live-model", name + "/" + dev + " " + type(exc).__name__)
             continue
     raise RuntimeError("Nenhum modelo Whisper local utilizável")
 
@@ -112,8 +131,8 @@ def live_transcribe(audio, final=False):
         return ""
     audio = np.clip(audio * min(4., .8 / peak), -1., 1.)
     segments, _ = _live_model.transcribe(audio, language="pt", task="transcribe",
-        beam_size=1, best_of=1, temperature=0., condition_on_previous_text=False,
-        vad_filter=False, no_speech_threshold=.65,
+        beam_size=2 if final else 1, best_of=1, temperature=0., condition_on_previous_text=False,
+        vad_filter=final, vad_parameters={"min_speech_duration_ms": 120, "min_silence_duration_ms": 300, "speech_pad_ms": 250} if final else None, no_speech_threshold=.65,
         hotwords=os.getenv("ALTAIR_WHISPER_TERMS", "Altair, ChatGPT, GitHub, Lovable, Codex")[:300] or None)
     return " ".join(s.text.strip() for s in segments if s.no_speech_prob < .8).strip()
 
