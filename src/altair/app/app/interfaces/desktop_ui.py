@@ -1816,6 +1816,7 @@ class DesktopUI(QMainWindow):
         if not hasattr(self, "live_panel"):
             return
         if kind == "closed":
+            self.btn_interromper_fala.setEnabled(False)
             self.live_panel.hide()
             self.live_headset.setChecked(False)
             self.live_caption.clear()
@@ -1891,6 +1892,7 @@ class DesktopUI(QMainWindow):
         # sem ligar o estado "ouvindo" visual.
         if os.getenv("ALTAIR_STT_MODE", "remote") != "local" and not external_services_allowed():
             self._ptt_active = False
+            self.live_panel.hide()
             self._hud_mic_active = False
             self._atualizar_ui_microfone()
             self.set_ia_status("IA: Permita servicos externos para usar a transcricao de voz")
@@ -2696,6 +2698,11 @@ class DesktopUI(QMainWindow):
 
     def _atualizar_botao_falar_impl(self, ativo: bool) -> None:
         self._voice_response_enabled = bool(ativo)
+        if not ativo and self._stop_speech:
+            try:
+                self._stop_speech()
+            except Exception:
+                pass
         self.btn_falar.setText("Voz: ligada" if ativo else "Voz: desligada")
         self.btn_falar.setIcon(self._icon_pixmap("mic_on" if ativo else "mic", 16))
         self.btn_falar.setToolTip("Desativar fala da resposta" if ativo else "Ativar fala da resposta")
