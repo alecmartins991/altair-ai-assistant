@@ -6,6 +6,7 @@ import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
+from altair.core.live_dsp import VoiceGate, pause_seconds
 
 RATE = 16000
 BLOCK = 320
@@ -32,8 +33,9 @@ def live_capture(emit, cancelled=lambda: False):
     frames = queue.Queue(maxsize=500)
     overflow = threading.Event()
     pre = deque(maxlen=15)
-    noise = 0.0005
     threshold = min(.025, max(.0007, float(os.getenv("ALTAIR_MIC_THRESHOLD", ".003")) * .55))
+    gate = VoiceGate(threshold)
+    configured_pause = min(.95, float(os.getenv("ALTAIR_MIC_PAUSE", "1.8")) * .5)
     audio = []
     started = None
     last_voice = None
@@ -45,6 +47,7 @@ def live_capture(emit, cancelled=lambda: False):
     heard = 0
     max_level = 0.0
     start = time.monotonic()
+    last_frame = start
 
     def callback(indata, count, info, status):
         try:
@@ -53,7 +56,7 @@ def live_capture(emit, cancelled=lambda: False):
             overflow.set()
 
     def submit(executor, samples, final):
-        return executor.submit(live_transcribe, np.concatenate(samples), final=final)
+        return executor.submit(live_transcribe, gate.clean(np.concatenate(samples)), final=final)
 
     def collect():
         nonlocal future, last_partial
@@ -74,26 +77,23 @@ def live_capture(emit, cancelled=lambda: False):
                 try:
                     now, frame = frames.get(timeout=.1)
                 except queue.Empty:
-                    if time.monotonic() - start > 12 and started is None:
-                        return ""
-                    if started is not None and time.monotonic() - last_voice > 3:
+                    if time.monotonic() - last_frame > 3:
                         raise RuntimeError("Microphone stopped delivering frames")
                     continue
                 if rate != RATE or len(frame) != BLOCK:
                     frame = np.interp(np.linspace(0, len(frame)-1, BLOCK), np.arange(len(frame)), frame).astype(np.float32)
-                level = float(np.sqrt(np.mean(frame * frame)))
+                last_frame = now
+                level, is_voice = gate.analyze(frame)
                 max_level = max(max_level, level)
                 if now - last_level >= .08:
                     emit("level", level)
                     last_level = now
-                gate = max(threshold, min(.025, noise * 2.8))
                 if started is None:
                     pre.append(frame)
-                    if level > gate:
+                    if is_voice:
                         heard += 1
                     else:
                         heard = 0
-                        noise = noise * .98 + min(level, .008) * .02
                     if heard >= 3:
                         started = last_voice = now
                         audio.extend(pre)
@@ -107,17 +107,15 @@ def live_capture(emit, cancelled=lambda: False):
                         return ""
                     continue
                 audio.append(frame)
-                if level > gate:
+                if is_voice:
                     last_voice = now
                 # Re-decode snapshots while speaking; never enqueue stale partials.
                 if future is None and now - started >= .65 and now - partial_at >= .65 and len(audio) > partial_n + 20:
                     partial_n = len(audio)
                     partial_at = now
                     future = submit(executor, list(audio), False)
-                pause = .70
-                if last_partial.rstrip().endswith((",", "...", ":")) or last_partial.lower().split()[-1:] in (["e"], ["que"], ["porque"], ["mas"], ["pra"], ["de"]):
-                    pause = 1.15
-                if now - last_voice >= pause or now - started >= 35:
+                pause = pause_seconds(last_partial, configured_pause)
+                if now - last_voice >= pause or now - started >= 60:
                     break
         emit("level", 0.0)
         if cancelled():
@@ -129,9 +127,11 @@ def live_capture(emit, cancelled=lambda: False):
             return ""
         # Reuse a partial only if it includes all voiced frames plus a short tail.
         voiced_n = max(0, len(audio) - int((now - last_voice) * RATE / BLOCK))
-        if last_partial and partial_n >= voiced_n + 10 and partial_n > 0:
+        if last_partial and partial_n >= voiced_n + 15 and partial_n > 0:
             result = last_partial
         else:
             result = submit(executor, audio, True).result().strip()
+        if not result:
+            emit("phase", "Não consegui entender. Pode repetir?")
         record("live-stt", "ms=" + str(int((time.monotonic()-now)*1000)))
         return "" if cancelled() else result
